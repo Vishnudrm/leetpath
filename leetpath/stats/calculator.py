@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from dsa_coach.database.queries import (
+from leetpath.database.queries import (
     get_user_meta,
     set_user_meta,
     get_all_solve_logs,

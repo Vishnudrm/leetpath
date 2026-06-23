@@ -1,7 +1,7 @@
 import os
 import sqlite3
 from datetime import datetime
-from dsa_coach.config import DB_DIR, DB_PATH, TOPIC_CONFIGS
+from leetpath.config import DB_DIR, DB_PATH, TOPIC_CONFIGS
 
 def get_connection():
     """Create directory if not exists, and return a connection to SQLite."""

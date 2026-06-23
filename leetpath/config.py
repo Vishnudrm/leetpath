@@ -1,8 +1,8 @@
 import os
 
 # SQLite database configuration
-DB_DIR = os.path.expanduser("~/.dsa_coach")
-DB_PATH = os.path.join(DB_DIR, "dsa.db")
+DB_DIR = os.path.expanduser("~/.leetpath")
+DB_PATH = os.path.join(DB_DIR, "leetpath.db")
 
 # Target mastery threshold (70%)
 MASTERY_THRESHOLD = 0.70

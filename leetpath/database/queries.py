@@ -1,6 +1,6 @@
 import sqlite3
 from datetime import datetime
-from dsa_coach.database.setup import get_connection
+from leetpath.database.setup import get_connection
 
 def dict_factory(cursor, row):
     """Convert SQLite row to dictionary."""

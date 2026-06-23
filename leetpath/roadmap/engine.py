@@ -1,5 +1,5 @@
 from datetime import datetime
-from dsa_coach.database.queries import (
+from leetpath.database.queries import (
     get_active_topic,
     get_topic_by_order,
     get_all_topics,
@@ -7,8 +7,8 @@ from dsa_coach.database.queries import (
     set_user_meta,
     get_topic_by_id
 )
-from dsa_coach.stats.calculator import calculate_topic_mastery
-from dsa_coach.assignments.generator import generate_daily_assignments
+from leetpath.stats.calculator import calculate_topic_mastery
+from leetpath.assignments.generator import generate_daily_assignments
 
 def is_track1_complete() -> bool:
     """Check if all Track 1 topics (order 1 to 10) are either complete or skipped."""
@@ -105,7 +105,7 @@ def advance_to_next_topic(today_str: str = None, force: bool = False) -> tuple[b
     
     if not next_topic:
         all_topics = get_all_topics()
-        return True, f"Congratulations! You have completed all {len(all_topics)} topics on the DSA Coach roadmap!"
+        return True, f"Congratulations! You have completed all {len(all_topics)} topics on the leetpath roadmap!"
         
     # Check Track 2 restriction
     if next_topic["track"] == 2 and not is_track1_complete():

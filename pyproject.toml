@@ -3,7 +3,7 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "dsa-coach"
+name = "leetpath"
 version = "1.0.0"
 requires-python = ">=3.10"
 dependencies = [
@@ -14,4 +14,4 @@ dependencies = [
 ]
 
 [project.scripts]
-dsa = "dsa_coach.cli.main:app"
+dsa = "leetpath.cli.main:app"

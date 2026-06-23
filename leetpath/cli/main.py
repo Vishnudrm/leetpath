@@ -5,9 +5,9 @@ from rich.prompt import Prompt, Confirm
 from rich.console import Console
 
 # Import configurations and db layers
-from dsa_coach.config import MASTERY_THRESHOLD
-from dsa_coach.database.setup import initialize_database, reset_database
-from dsa_coach.database.queries import (
+from leetpath.config import MASTERY_THRESHOLD
+from leetpath.database.setup import initialize_database, reset_database
+from leetpath.database.queries import (
     is_db_initialized,
     get_user_meta,
     set_user_meta,
@@ -25,20 +25,20 @@ from dsa_coach.database.queries import (
     get_assignments_for_topic,
     get_problems_per_day
 )
-from dsa_coach.assignments.generator import generate_daily_assignments
-from dsa_coach.stats.calculator import (
+from leetpath.assignments.generator import generate_daily_assignments
+from leetpath.stats.calculator import (
     update_and_get_streaks,
     calculate_topic_mastery,
     get_overall_stats_data
 )
-from dsa_coach.roadmap.engine import (
+from leetpath.roadmap.engine import (
     get_roadmap_progress,
     check_and_update_active_topic,
     advance_to_next_topic,
     resolve_topic_name
 )
-from dsa_coach.fetcher.leetcode import scrape_leetcode_problem
-from dsa_coach.dashboard.render import (
+from leetpath.fetcher.leetcode import scrape_leetcode_problem
+from leetpath.dashboard.render import (
     render_welcome_screen,
     render_dashboard,
     render_today_assignments,
@@ -50,13 +50,13 @@ from dsa_coach.dashboard.render import (
     render_topic_progress
 )
 
-app = typer.Typer(help="DSA Coach: A terminal-based personal DSA preparation assistant.")
+app = typer.Typer(help="leetpath: Your terminal path through DSA — structured, tracked, placement-ready.")
 console = Console()
 
 def check_init():
     """Ensure database is initialized, otherwise instruct user and exit."""
     if not is_db_initialized():
-        console.print("[bold red]Error: DSA Coach is not initialized yet.[/bold red]")
+        console.print("[bold red]Error: leetpath is not initialized yet.[/bold red]")
         console.print("Run [bold cyan]dsa start[/bold cyan] to initialize your study plan.\n")
         raise typer.Exit(code=1)
 
@@ -125,7 +125,7 @@ def start():
     
     if is_db_initialized():
         confirm_wipe = Confirm.ask(
-            "[bold yellow]DSA Coach has already been initialized. Wiping progress will permanently delete all logs. Continue?[/bold yellow]"
+            "[bold yellow]leetpath has already been initialized. Wiping progress will permanently delete all logs. Continue?[/bold yellow]"
         )
         if not confirm_wipe:
             console.print("[cyan]Initialization aborted.[/cyan]\n")
@@ -151,7 +151,7 @@ def start():
             console.print("[red]Please enter a valid integer.[/red]")
             
     # Step 2: Customize roadmap
-    from dsa_coach.config import TOPIC_CONFIGS
+    from leetpath.config import TOPIC_CONFIGS
     topics_list = []
     for idx, cfg in enumerate(TOPIC_CONFIGS, start=1):
         topics_list.append({
@@ -335,12 +335,12 @@ def roadmap():
         # Update in database if status isn't complete/skipped (actually update for accurate roadmap)
         # We can update status to complete if mastery crossed 70% (just in case)
         if t["status"] == "active" and mastery >= 70.0:
-            from dsa_coach.database.queries import update_topic_status
+            from leetpath.database.queries import update_topic_status
             update_topic_status(t["id"], status="complete", completed_date=datetime.today().strftime("%Y-%m-%d"), mastery_score=mastery)
             t["status"] = "complete"
             t["mastery_score"] = mastery
         else:
-            from dsa_coach.database.queries import update_topic_status
+            from leetpath.database.queries import update_topic_status
             update_topic_status(t["id"], status=t["status"], mastery_score=mastery)
             t["mastery_score"] = mastery
             
@@ -478,7 +478,7 @@ def progress():
     for t in topics:
         mastery = calculate_topic_mastery(t["id"])
         # Update in DB
-        from dsa_coach.database.queries import update_topic_status
+        from leetpath.database.queries import update_topic_status
         update_topic_status(t["id"], status=t["status"], mastery_score=mastery)
         t["mastery_score"] = mastery
         
@@ -605,16 +605,16 @@ def move_cmd(
         # Update topics
         for t in topics:
             if t["order_index"] > resolved["order_index"]:
-                from dsa_coach.database.queries import update_topic_state
+                from leetpath.database.queries import update_topic_state
                 update_topic_state(t["id"], status="locked", started_date=None, completed_date=None, mastery_score=0.0)
             elif t["order_index"] == resolved["order_index"]:
-                from dsa_coach.database.queries import update_topic_state
+                from leetpath.database.queries import update_topic_state
                 update_topic_state(t["id"], status="active", started_date=today_str, completed_date=None)
                 
         set_user_meta("current_topic_id", str(resolved["id"]))
         
         # Clear daily assignments for today and regenerate for the new active topic
-        from dsa_coach.database.queries import delete_assignments_for_date
+        from leetpath.database.queries import delete_assignments_for_date
         delete_assignments_for_date(today_str)
         generate_daily_assignments(today_str)
         
@@ -641,19 +641,19 @@ def move_cmd(
         for t in topics:
             if t["order_index"] < resolved["order_index"]:
                 if t["status"] not in ["complete", "skipped"]:
-                    from dsa_coach.database.queries import update_topic_state
+                    from leetpath.database.queries import update_topic_state
                     update_topic_state(t["id"], status="skipped", started_date=None, completed_date=None)
             elif t["order_index"] == resolved["order_index"]:
-                from dsa_coach.database.queries import update_topic_state
+                from leetpath.database.queries import update_topic_state
                 update_topic_state(t["id"], status="active", started_date=today_str, completed_date=None)
             else:
-                from dsa_coach.database.queries import update_topic_state
+                from leetpath.database.queries import update_topic_state
                 update_topic_state(t["id"], status="locked", started_date=None, completed_date=None, mastery_score=0.0)
                 
         set_user_meta("current_topic_id", str(resolved["id"]))
         
         # Clear daily assignments for today and regenerate for the new active topic
-        from dsa_coach.database.queries import delete_assignments_for_date
+        from leetpath.database.queries import delete_assignments_for_date
         delete_assignments_for_date(today_str)
         generate_daily_assignments(today_str)
         

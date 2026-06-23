@@ -1,10 +1,10 @@
-# DSA Coach
+# leetpath
 
-> A terminal-based DSA preparation assistant for placement-focused CS students.
+> Your terminal-based path through DSA — structured, tracked, placement-ready.
 
 ## Overview
 
-DSA Coach is a fully local, terminal-based tool that structures your DSA
+leetpath is a fully local, terminal-based tool that structures your DSA
 preparation for placement interviews at Indian product companies and FAANG.
 It replaces random LeetCode grinding with a structured 16-topic roadmap,
 dynamically fetched daily problems, and detailed progress tracking —
@@ -22,7 +22,7 @@ daily problem fetching.
 - ⚙️  Fully customizable roadmap (reorder, add, remove topics, set days)
 - ⏭️  Skip or move to any topic at any time
 - 🖥️  Clean minimal terminal UI powered by Rich
-- 💾 Fully local — all data stored in ~/.dsa_coach/dsa.db
+- 💾 Fully local — all data stored in ~/.leetpath/leetpath.db
 
 ## Tech Stack
 
@@ -44,8 +44,8 @@ daily problem fetching.
 ### Steps
 
 ```bash
-git clone https://github.com/vishnudrm/dsa-coach.git
-cd dsa-coach
+git clone https://github.com/vishnudrm/leetpath.git
+cd leetpath
 pip install -e .
 ```
 
@@ -112,7 +112,7 @@ and generates your first set of daily problems.
 ### Project Structure
 
 ```
-dsa_coach/
+leetpath/
 ├── cli/
 │   └── main.py          — All Typer CLI commands and entry point
 ├── dashboard/
@@ -134,7 +134,7 @@ dsa_coach/
 
 ### Data Flow
 
-1. `dsa start` initializes SQLite DB at ~/.dsa_coach/dsa.db
+1. `dsa start` initializes SQLite DB at ~/.leetpath/leetpath.db
 2. Topics seeded into DB with order, estimated days, track, and LeetCode slug
 3. Each day, generator.py checks if assignments already exist for today
 4. If not: fetcher queries LeetCode by topic slug and difficulty split
@@ -168,7 +168,7 @@ On `dsa start` you can customize:
 All data stored locally at:
 
 ```
-~/.dsa_coach/dsa.db
+~/.leetpath/leetpath.db
 ```
 
 No cloud sync. No account required. Fully private and offline.

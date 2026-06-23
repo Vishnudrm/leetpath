@@ -11,7 +11,7 @@ console = Console()
 
 def render_welcome_screen(start_date: str, problems_per_day: int = 5, total_topics: int = 16):
     """Render the welcome screen for first-time initialization."""
-    title_text = Text("\nWelcome to DSA Coach!", style="bold cyan")
+    title_text = Text("\nWelcome to leetpath!", style="bold cyan")
     body_text = Text(
         f"\nYour personal terminal-based assistant for placement preparation (Indian Product Companies + FAANG).\n"
         f"Study Plan started on: {start_date}\n\n"
@@ -25,7 +25,7 @@ def render_welcome_screen(start_date: str, problems_per_day: int = 5, total_topi
     )
     welcome_panel = Panel(
         Text.assemble(title_text, body_text),
-        title="[bold cyan]DSA Coach Initialized[/bold cyan]",
+        title="[bold cyan]leetpath Initialized[/bold cyan]",
         border_style="cyan",
         expand=False,
         padding=(1, 3)
@@ -81,7 +81,7 @@ def render_dashboard(
     
     badge = " [bold green]Placement Ready ✓[/bold green]" if placement_ready else ""
     header.add_row(
-        Text.from_markup(f"DSA Coach | Day {day_num}{badge}", style="bold cyan"),
+        Text.from_markup(f"leetpath | Day {day_num}{badge}", style="bold cyan"),
         Text(today_date, style="dim white")
     )
     console.print(header)
@@ -89,8 +89,8 @@ def render_dashboard(
     
     # Active Topic Section
     if active_topic:
-        from dsa_coach.database.queries import get_problems_per_day
-        from dsa_coach.assignments.generator import get_difficulty_split
+        from leetpath.database.queries import get_problems_per_day
+        from leetpath.assignments.generator import get_difficulty_split
         problems_per_day = get_problems_per_day()
         diff_split = get_difficulty_split(days_elapsed, active_topic["estimated_days"], problems_per_day)
         
@@ -173,7 +173,7 @@ def render_today_assignments(assignments: list[dict]):
 
 def render_roadmap(topics: list[dict], overall_pct: float):
     """Render the roadmap with Track dividers and milestone marker."""
-    table = Table(title=f"[bold cyan]DSA Coach Roadmap ({len(topics)} Topics)[/bold cyan]", border_style="cyan", expand=True)
+    table = Table(title=f"[bold cyan]leetpath Roadmap ({len(topics)} Topics)[/bold cyan]", border_style="cyan", expand=True)
     table.add_column("#", justify="center", width=4)
     table.add_column("Topic", justify="left")
     table.add_column("Track", justify="center", width=8)
@@ -247,7 +247,7 @@ def render_pending_assignments(assignments: list[dict]):
 
 def render_progress(topics: list[dict], placement_ready: bool):
     """Render per-topic progress report."""
-    console.print(Text("DSA Coach Progress Deep-Dive", style="bold cyan"))
+    console.print(Text("leetpath Progress Deep-Dive", style="bold cyan"))
     console.print()
     
     current_track = 1
@@ -299,7 +299,7 @@ def render_progress(topics: list[dict], placement_ready: bool):
 
 def render_stats(stats: dict):
     """Render overall statistics dashboard."""
-    console.print("[bold cyan]DSA Coach Statistics Dashboard[/bold cyan]\n")
+    console.print("[bold cyan]leetpath Statistics Dashboard[/bold cyan]\n")
     
     diff_counts = stats["diff_counts"]
     avg_times = stats["avg_times"]

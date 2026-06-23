@@ -1,8 +1,8 @@
 import math
 import random
 from datetime import datetime
-from dsa_coach.config import MASTERY_THRESHOLD
-from dsa_coach.database.queries import (
+from leetpath.config import MASTERY_THRESHOLD
+from leetpath.database.queries import (
     get_active_topic,
     get_assignments_for_date,
     insert_assignments,
@@ -10,8 +10,8 @@ from dsa_coach.database.queries import (
     get_assignments_for_topic,
     get_problems_per_day
 )
-from dsa_coach.fetcher.leetcode import fetch_problems_by_tag
-from dsa_coach.fetcher.fallback import FALLBACK_PROBLEMS
+from leetpath.fetcher.leetcode import fetch_problems_by_tag
+from leetpath.fetcher.fallback import FALLBACK_PROBLEMS
 
 def get_days_elapsed(started_date_str: str, today_str: str) -> int:
     """Calculate the 1-based days elapsed in a topic."""
@@ -71,7 +71,7 @@ def generate_daily_assignments(today_str: str = None) -> list[dict]:
         if existing[0]["topic_id"] == active_topic["id"] and len(existing) == problems_per_day:
             return existing
         else:
-            from dsa_coach.database.queries import delete_assignments_for_date
+            from leetpath.database.queries import delete_assignments_for_date
             delete_assignments_for_date(today_str)
         
     started_date = active_topic["started_date"]
@@ -96,7 +96,7 @@ def generate_daily_assignments(today_str: str = None) -> list[dict]:
     # Resolve topic slug
     topic_slug = active_topic.get("leetcode_slug") or active_topic.get("slug")
     if not topic_slug:
-        from dsa_coach.config import TOPIC_CONFIGS
+        from leetpath.config import TOPIC_CONFIGS
         for cfg in TOPIC_CONFIGS:
             if cfg["name"].lower() == active_topic["name"].lower():
                 topic_slug = cfg["slug"]
