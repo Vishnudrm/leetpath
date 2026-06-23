@@ -144,5 +144,22 @@ def initialize_database(start_date_str=None, topics_list=None, problems_per_day=
 
 def reset_database():
     """Wipe the database completely."""
-    if os.path.exists(DB_PATH):
-        os.remove(DB_PATH)
+    import sqlite3
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM solve_log;")
+        cursor.execute("DELETE FROM assignments;")
+        cursor.execute("DELETE FROM topics;")
+        cursor.execute("DELETE FROM user_meta;")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        conn.close()
+        
+    try:
+        if os.path.exists(DB_PATH):
+            os.remove(DB_PATH)
+    except Exception:
+        pass

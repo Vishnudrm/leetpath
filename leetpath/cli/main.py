@@ -23,7 +23,12 @@ from leetpath.database.queries import (
     get_topic_by_id,
     get_solves_for_topic,
     get_assignments_for_topic,
-    get_problems_per_day
+    get_problems_per_day,
+    update_solve_log,
+    delete_solve_log,
+    mark_assignment_pending,
+    update_assignment_status,
+    find_pending_assignment_today
 )
 from leetpath.assignments.generator import generate_daily_assignments
 from leetpath.stats.calculator import (
@@ -37,7 +42,7 @@ from leetpath.roadmap.engine import (
     advance_to_next_topic,
     resolve_topic_name
 )
-from leetpath.fetcher.leetcode import scrape_leetcode_problem
+from leetpath.fetcher.leetcode import scrape_leetcode_problem, normalize_leetcode_url
 from leetpath.dashboard.render import (
     render_welcome_screen,
     render_dashboard,
@@ -47,7 +52,8 @@ from leetpath.dashboard.render import (
     render_progress,
     render_stats,
     render_history,
-    render_topic_progress
+    render_topic_progress,
+    get_difficulty_colored
 )
 
 app = typer.Typer(help="leetpath: Your terminal path through DSA — structured, tracked, placement-ready.")
@@ -359,8 +365,8 @@ def log(leetcode_url: Optional[str] = typer.Argument(None)):
     if not leetcode_url:
         leetcode_url = typer.prompt("Enter LeetCode URL")
         
-    # Normalize URL by removing spaces/slashes
-    leetcode_url = leetcode_url.strip()
+    # Normalize URL by removing spaces/slashes and subpaths
+    leetcode_url = normalize_leetcode_url(leetcode_url)
     
     # Check if duplicate
     existing_solve = get_solve_log_by_url(leetcode_url)
@@ -407,23 +413,24 @@ def log(leetcode_url: Optional[str] = typer.Argument(None)):
     approach_note = Prompt.ask("Approach note (optional, press Enter to skip)", default="")
     
     # Step 7: Save solve log and show confirmation
-    # Find matching assignment
-    assignment = get_assignment_by_url(leetcode_url, status_filter="pending")
+    # Find matching assignment by comparing title or url against today's assignments
+    matched_assignment = find_pending_assignment_today(title, leetcode_url, today_str)
+            
     active_topic = get_active_topic()
     
     if not active_topic:
         console.print("[bold red]Error: No active topic found. Cannot log solve.[/bold red]")
         raise typer.Exit(code=1)
         
-    if assignment:
+    if matched_assignment:
         # Mark assignment solved
-        mark_assignment_solved(assignment["id"])
+        update_assignment_status(matched_assignment["id"], 'solved')
         # Insert log linked to assignment
         insert_solve_log(
-            assignment_id=assignment["id"],
+            assignment_id=matched_assignment["id"],
             title=title,
             url=leetcode_url,
-            topic_id=assignment["topic_id"],
+            topic_id=matched_assignment["topic_id"],
             difficulty=difficulty,
             solved_date=today_str,
             time_taken=time_taken,
@@ -432,9 +439,8 @@ def log(leetcode_url: Optional[str] = typer.Argument(None)):
             is_assigned=1
         )
         console.print(f"[bold green]Successfully logged assignment: '{title}'![/bold green]")
+        console.print("✓ Marked as solved in today's assignments.")
     else:
-        # Check if URL was assigned but already solved, or completely bonus
-        # If the URL is in assignments but status is 'solved', it's already solved (prevented by duplicate check though)
         # Log as bonus solve under the active topic
         insert_solve_log(
             assignment_id=None,
@@ -449,6 +455,7 @@ def log(leetcode_url: Optional[str] = typer.Argument(None)):
             is_assigned=0
         )
         console.print(f"[bold green]Successfully logged bonus solve: '{title}' under active topic '{active_topic['name']}'![/bold green]")
+        console.print("✓ Logged as bonus solve (not in today's assignments).")
         
     # Recalculate topic mastery and update active topic
     check_and_update_active_topic(today_str)
@@ -503,6 +510,115 @@ def history(
     check_init()
     history_logs = get_solve_history(topic_slug=topic, difficulty=difficulty, limit=last)
     render_history(history_logs)
+
+@app.command(name="edit")
+def edit():
+    """Edit or delete a previously logged solve."""
+    check_init()
+    
+    # Step 1 — Show recent solve history (last 10 entries) as a numbered list
+    logs = get_solve_history(limit=10)
+    if not logs:
+        console.print("[yellow]No logged solves found.[/yellow]")
+        raise typer.Exit()
+        
+    from rich.table import Table
+    table = Table(title="[bold cyan]Recent Solve History[/bold cyan]", border_style="cyan")
+    table.add_column("#", justify="center", width=4)
+    table.add_column("Date", justify="center", width=12)
+    table.add_column("Problem Name", justify="left")
+    table.add_column("Difficulty", justify="center", width=12)
+    table.add_column("Time", justify="center", width=10)
+    
+    for idx, log in enumerate(logs, start=1):
+        time_str = f"{log['time_taken_minutes']} min" if log['time_taken_minutes'] else "-"
+        table.add_row(
+            str(idx),
+            log["solved_date"],
+            log["title"],
+            get_difficulty_colored(log["difficulty"]),
+            time_str
+        )
+    console.print(table)
+    
+    # Step 2 — Prompt
+    while True:
+        choice_str = Prompt.ask("Enter the # of the log to edit (or 0 to cancel)")
+        try:
+            choice = int(choice_str)
+            if 0 <= choice <= len(logs):
+                break
+            else:
+                console.print(f"[red]Please enter an integer between 0 and {len(logs)}.[/red]")
+        except ValueError:
+            console.print("[red]Please enter a valid integer.[/red]")
+            
+    if choice == 0:
+        console.print("No changes made.")
+        raise typer.Exit()
+        
+    selected_log = logs[choice - 1]
+    
+    # Step 3 — Show current values and prompt for new ones
+    console.print(f"Problem: {selected_log['title']}")
+    
+    current_time = selected_log['time_taken_minutes']
+    time_taken_str = Prompt.ask("Time taken", default=str(current_time) if current_time is not None else "0")
+    try:
+        time_taken = int(time_taken_str)
+    except ValueError:
+        time_taken = current_time or 0
+        
+    current_path = selected_log['local_path'] or ""
+    local_path = Prompt.ask("Local file path", default=current_path)
+    
+    current_approach = selected_log['approach_note'] or ""
+    approach_note = Prompt.ask("Approach note", default=current_approach)
+    
+    # Step 4 — Action menu
+    console.print("\nWhat do you want to do?")
+    console.print("  [1] Save changes")
+    console.print("  [2] Delete this log entry")
+    console.print("  [3] Cancel")
+    
+    action = Prompt.ask("Select an option", choices=["1", "2", "3"])
+    
+    # Step 5 — Save
+    if action == "1":
+        update_solve_log(selected_log["id"], time_taken, local_path, approach_note)
+        console.print("✓ Log updated successfully.")
+        
+    # Step 6 — Delete
+    elif action == "2":
+        confirm_delete = Confirm.ask(
+            f"Delete log for {selected_log['title']}? This will mark it as pending again.",
+            default=False
+        )
+        if confirm_delete:
+            delete_solve_log(selected_log["id"])
+            if selected_log["is_assigned"] == 1 and selected_log["assignment_id"] is not None:
+                mark_assignment_pending(selected_log["assignment_id"])
+                
+            # Recalculate topic mastery
+            topic_id = selected_log["topic_id"]
+            new_mastery = calculate_topic_mastery(topic_id)
+            topic = get_topic_by_id(topic_id)
+            if topic:
+                from leetpath.database.queries import update_topic_status
+                update_topic_status(topic_id, status=topic["status"], mastery_score=new_mastery)
+                
+            # Keep active topic status in sync
+            today_str = datetime.today().strftime("%Y-%m-%d")
+            check_and_update_active_topic(today_str)
+            
+            console.print("✓ Log deleted. Problem marked as pending.")
+        else:
+            console.print("No changes made.")
+            
+    # Step 7 — Cancel
+    elif action == "3":
+        console.print("No changes made.")
+        raise typer.Exit()
 
 @app.command(name="next")
 def next_topic():

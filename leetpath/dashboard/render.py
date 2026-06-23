@@ -149,6 +149,14 @@ def render_today_assignments(assignments: list[dict]):
         console.print("[yellow]No assignments found for today. Generate using 'dsa' or 'dsa start'[/yellow]")
         return
         
+    from leetpath.database.queries import get_solve_history
+    today_str = datetime.today().strftime('%Y-%m-%d')
+    history_logs = get_solve_history(limit=500)
+    solved_today_titles = {
+        log["title"].strip().lower() for log in history_logs
+        if log["solved_date"] == today_str
+    }
+        
     table = Table(title="[bold cyan]Today's Daily Assignments[/bold cyan]", border_style="cyan", expand=True)
     table.add_column("#", justify="center", width=6)
     table.add_column("Problem Name", justify="left")
@@ -158,8 +166,12 @@ def render_today_assignments(assignments: list[dict]):
     solved_count = 0
     for idx, ass in enumerate(assignments, start=1):
         status = ass["status"]
-        if status.lower() == "solved":
+        is_solved = (status.lower() == "solved") or (ass["title"].strip().lower() in solved_today_titles)
+        if is_solved:
+            status = "solved"
             solved_count += 1
+        else:
+            status = "pending"
             
         table.add_row(
             str(idx),

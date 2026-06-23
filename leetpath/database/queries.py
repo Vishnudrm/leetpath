@@ -1,6 +1,7 @@
 import sqlite3
 from datetime import datetime
 from leetpath.database.setup import get_connection
+from leetpath.fetcher.leetcode import normalize_leetcode_url
 
 def dict_factory(cursor, row):
     """Convert SQLite row to dictionary."""
@@ -118,10 +119,11 @@ def insert_assignments(assignments_list):
     conn = get_db_conn()
     cursor = conn.cursor()
     for item in assignments_list:
+        normalized_url = normalize_leetcode_url(item["leetcode_url"])
         cursor.execute("""
         INSERT INTO assignments (title, leetcode_url, difficulty, topic_id, assigned_date, status)
         VALUES (?, ?, ?, ?, ?, 'pending')
-        """, (item["title"], item["leetcode_url"], item["difficulty"], item["topic_id"], item["assigned_date"]))
+        """, (item["title"], normalized_url, item["difficulty"], item["topic_id"], item["assigned_date"]))
     conn.commit()
     conn.close()
 
@@ -135,12 +137,13 @@ def delete_assignments_for_date(date_str: str):
 
 def get_assignment_by_url(url: str, status_filter=None):
     """Find an assignment by URL, optionally filtering by status."""
+    normalized_url = normalize_leetcode_url(url)
     conn = get_db_conn()
     cursor = conn.cursor()
     if status_filter:
-        cursor.execute("SELECT * FROM assignments WHERE leetcode_url = ? AND status = ? LIMIT 1", (url, status_filter))
+        cursor.execute("SELECT * FROM assignments WHERE leetcode_url = ? AND status = ? LIMIT 1", (normalized_url, status_filter))
     else:
-        cursor.execute("SELECT * FROM assignments WHERE leetcode_url = ? LIMIT 1", (url,))
+        cursor.execute("SELECT * FROM assignments WHERE leetcode_url = ? LIMIT 1", (normalized_url,))
     row = cursor.fetchone()
     conn.close()
     return row
@@ -155,21 +158,23 @@ def mark_assignment_solved(assignment_id: int):
 
 def get_solve_log_by_url(url: str):
     """Get solve log by URL to check for duplicates."""
+    normalized_url = normalize_leetcode_url(url)
     conn = get_db_conn()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM solve_log WHERE leetcode_url = ? LIMIT 1", (url,))
+    cursor.execute("SELECT * FROM solve_log WHERE leetcode_url = ? LIMIT 1", (normalized_url,))
     row = cursor.fetchone()
     conn.close()
     return row
 
 def insert_solve_log(assignment_id, title, url, topic_id, difficulty, solved_date, time_taken, local_path, approach_note, is_assigned):
     """Insert a solved problem into the log."""
+    normalized_url = normalize_leetcode_url(url)
     conn = get_db_conn()
     cursor = conn.cursor()
     cursor.execute("""
     INSERT INTO solve_log (assignment_id, title, leetcode_url, topic_id, difficulty, solved_date, time_taken_minutes, local_path, approach_note, is_assigned)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (assignment_id, title, url, topic_id, difficulty, solved_date, time_taken, local_path, approach_note, is_assigned))
+    """, (assignment_id, title, normalized_url, topic_id, difficulty, solved_date, time_taken, local_path, approach_note, is_assigned))
     conn.commit()
     conn.close()
 
@@ -281,3 +286,74 @@ def get_problems_per_day() -> int:
         except ValueError:
             pass
     return 5
+
+def update_solve_log(log_id: int, time_taken: int, local_path: str, approach_note: str):
+    """Update an existing solve log entry."""
+    conn = get_db_conn()
+    cursor = conn.cursor()
+    cursor.execute("""
+    UPDATE solve_log
+    SET time_taken_minutes = ?, local_path = ?, approach_note = ?
+    WHERE id = ?
+    """, (time_taken, local_path, approach_note, log_id))
+    conn.commit()
+    conn.close()
+
+def delete_solve_log(log_id: int):
+    """Delete a solve log entry."""
+    conn = get_db_conn()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM solve_log WHERE id = ?", (log_id,))
+    conn.commit()
+    conn.close()
+
+def mark_assignment_pending(assignment_id: int):
+    """Update status of assignment to pending."""
+    conn = get_db_conn()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE assignments SET status = 'pending' WHERE id = ?", (assignment_id,))
+    conn.commit()
+    conn.close()
+
+def update_assignment_status(assignment_id: int, status: str):
+    """Update status of assignment (e.g. to solved or pending)."""
+    conn = get_db_conn()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE assignments SET status = ? WHERE id = ?", (status, assignment_id))
+    conn.commit()
+    conn.close()
+
+def find_pending_assignment_today(title: str, url: str, date_str: str) -> dict | None:
+    """Find a pending assignment for today matching by title (case-insensitive) or by slug in URL."""
+    conn = get_db_conn()
+    cursor = conn.cursor()
+    
+    # 1. Try matching by title
+    cursor.execute("""
+    SELECT * FROM assignments
+    WHERE assigned_date = ? AND LOWER(title) = ? AND status = 'pending'
+    LIMIT 1
+    """, (date_str, title.strip().lower()))
+    row = cursor.fetchone()
+    
+    if row:
+        conn.close()
+        return row
+        
+    # 2. Try matching by slug
+    from leetpath.fetcher.leetcode import extract_slug_from_url
+    slug = extract_slug_from_url(url)
+    if slug:
+        like_pattern = f"%{slug}%"
+        cursor.execute("""
+        SELECT * FROM assignments
+        WHERE assigned_date = ? AND leetcode_url LIKE ? AND status = 'pending'
+        LIMIT 1
+        """, (date_str, like_pattern))
+        row = cursor.fetchone()
+        if row:
+            conn.close()
+            return row
+            
+    conn.close()
+    return None

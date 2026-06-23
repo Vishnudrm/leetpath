@@ -10,12 +10,17 @@ HEADERS = {
 def extract_slug_from_url(url: str) -> str | None:
     """Extract question title slug from LeetCode URL."""
     url = url.strip()
-    # Normalize URL (remove trailing slashes, query parameters, etc.)
-    url = url.split("?")[0]
-    match = re.search(r"leetcode\.com/problems/([^/]+)", url)
+    match = re.search(r'/problems/([^/]+)', url)
     if match:
         return match.group(1)
     return None
+
+def normalize_leetcode_url(url: str) -> str:
+    """Normalize a LeetCode URL to its canonical form (https://leetcode.com/problems/slug/)."""
+    slug = extract_slug_from_url(url)
+    if slug:
+        return f"https://leetcode.com/problems/{slug}/"
+    return url.strip()
 
 def fetch_problems_by_tag(tag_slug: str, difficulty: str, skip: int = 0, limit: int = 20) -> list[dict]:
     """
