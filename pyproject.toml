@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dsa-coach"
+version = "1.0.0"
+requires-python = ">=3.10"
+dependencies = [
+  "typer",
+  "rich",
+  "requests",
+  "beautifulsoup4"
+]
+
+[project.scripts]
+dsa = "dsa_coach.cli.main:app"
