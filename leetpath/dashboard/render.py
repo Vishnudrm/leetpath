@@ -88,6 +88,21 @@ def render_dashboard(
     console.print("-" * 65, style="dim white")
     
     # Active Topic Section
+    pending_start_topic = None
+    completed_topic = None
+    
+    # Try to find pending_start topic if active_topic is None
+    if not active_topic:
+        from leetpath.database.queries import get_db_conn
+        conn = get_db_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM topics WHERE status = 'pending_start' LIMIT 1")
+        pending_start_topic = cursor.fetchone()
+        if pending_start_topic:
+            cursor.execute("SELECT * FROM topics WHERE order_index < ? AND status IN ('complete', 'skipped') ORDER BY order_index DESC LIMIT 1", (pending_start_topic["order_index"],))
+            completed_topic = cursor.fetchone()
+        conn.close()
+        
     if active_topic:
         from leetpath.database.queries import get_problems_per_day
         from leetpath.assignments.generator import get_difficulty_split
@@ -110,8 +125,20 @@ def render_dashboard(
             f"Phase: {phase_str}\n",
             f"Time spent: {days_elapsed} / {active_topic['estimated_days']} days elapsed"
         )
+        topic_panel = Panel(topic_info, title="[bold cyan]Active Focus[/bold cyan]", border_style="cyan", expand=True)
+    elif pending_start_topic:
+        completed_name = completed_topic["name"] if completed_topic else "Previous Topic"
+        scheduled_start = pending_start_topic["scheduled_start_date"] or "tomorrow"
+        rest_info = Text.assemble(
+            "Today's topic: ", Text(f"{completed_name} — Done ✓", style="bold green"), "\n",
+            "Next up: ", Text(pending_start_topic["name"], style="bold yellow"), "\n",
+            f"Starts tomorrow: {scheduled_start}\n",
+            "Take a break. You earned it."
+        )
+        topic_panel = Panel(rest_info, title="[bold cyan]Rest Day[/bold cyan]", border_style="cyan", expand=True)
     else:
         topic_info = Text("Active Topic: None\nRun 'dsa start' or check 'dsa progress'.")
+        topic_panel = Panel(topic_info, title="[bold cyan]Active Focus[/bold cyan]", border_style="cyan", expand=True)
         
     # Today's Progress Section
     progress_bar_str = draw_mini_progress_bar(today_solved, today_total, width=15)
@@ -122,7 +149,6 @@ def render_dashboard(
     )
     
     # Panel layout
-    topic_panel = Panel(topic_info, title="[bold cyan]Active Focus[/bold cyan]", border_style="cyan", expand=True)
     progress_panel = Panel(today_progress_info, title="[bold cyan]Daily Stats[/bold cyan]", border_style="cyan", expand=True)
     
     # Tracks Progress Section
@@ -143,19 +169,27 @@ def math_ceil_half(num: int) -> int:
     import math
     return math.ceil(num / 2.0)
 
+def get_today_progress_stats(today_str: str) -> tuple[int, int]:
+    """Get count of solved and total active assignments for today."""
+    from leetpath.database.queries import get_db_conn
+    conn = get_db_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) as cnt FROM assignments WHERE assigned_date = ? AND status = 'solved'", (today_str,))
+    solved = cursor.fetchone()["cnt"]
+    cursor.execute("SELECT COUNT(*) as cnt FROM assignments WHERE assigned_date = ? AND status != 'skipped'", (today_str,))
+    total = cursor.fetchone()["cnt"]
+    conn.close()
+    return solved, total
+
 def render_today_assignments(assignments: list[dict]):
     """Render today's assignments in a table."""
-    if not assignments:
+    active_assignments = [a for a in assignments if a["status"] != 'skipped']
+    if not active_assignments:
         console.print("[yellow]No assignments found for today. Generate using 'dsa' or 'dsa start'[/yellow]")
         return
         
-    from leetpath.database.queries import get_solve_history
-    today_str = datetime.today().strftime('%Y-%m-%d')
-    history_logs = get_solve_history(limit=500)
-    solved_today_titles = {
-        log["title"].strip().lower() for log in history_logs
-        if log["solved_date"] == today_str
-    }
+    regular = [a for a in active_assignments if not a.get("is_revisit")]
+    revisits = [a for a in active_assignments if a.get("is_revisit")]
         
     table = Table(title="[bold cyan]Today's Daily Assignments[/bold cyan]", border_style="cyan", expand=True)
     table.add_column("#", justify="center", width=6)
@@ -163,16 +197,8 @@ def render_today_assignments(assignments: list[dict]):
     table.add_column("Difficulty", justify="center", width=15)
     table.add_column("Status", justify="center", width=15)
     
-    solved_count = 0
-    for idx, ass in enumerate(assignments, start=1):
+    for idx, ass in enumerate(regular, start=1):
         status = ass["status"]
-        is_solved = (status.lower() == "solved") or (ass["title"].strip().lower() in solved_today_titles)
-        if is_solved:
-            status = "solved"
-            solved_count += 1
-        else:
-            status = "pending"
-            
         table.add_row(
             str(idx),
             ass["title"],
@@ -180,8 +206,35 @@ def render_today_assignments(assignments: list[dict]):
             get_status_colored(status)
         )
         
+    if revisits:
+        from leetpath.database.queries import get_topic_by_id
+        current_topic_id = None
+        revisit_idx = len(regular) + 1
+        for ass in revisits:
+            if ass["topic_id"] != current_topic_id:
+                current_topic_id = ass["topic_id"]
+                topic = get_topic_by_id(current_topic_id)
+                topic_name = topic["name"] if topic else "Unknown Topic"
+                table.add_row(
+                    "",
+                    f"[dim]── Revisit: {topic_name} ──[/dim]",
+                    "",
+                    ""
+                )
+            status = ass["status"]
+            table.add_row(
+                str(revisit_idx),
+                ass["title"],
+                get_difficulty_colored(ass["difficulty"]),
+                get_status_colored(status)
+            )
+            revisit_idx += 1
+            
+    today_str = datetime.today().strftime('%Y-%m-%d')
+    solved_today, total_today = get_today_progress_stats(today_str)
+        
     console.print(table)
-    console.print(f"\n[bold cyan]Summary:[/bold cyan] {solved_count}/{len(assignments)} solved today.\n")
+    console.print(f"\n[bold cyan]Summary:[/bold cyan] {solved_today}/{total_today} solved today.\n")
 
 def render_roadmap(topics: list[dict], overall_pct: float):
     """Render the roadmap with Track dividers and milestone marker."""
@@ -344,18 +397,17 @@ def render_history(history_logs: list[dict]):
         console.print("[yellow]No solve logs match your filters.[/yellow]\n")
         return
         
-    table = Table(title="[bold cyan]Solve History Log[/bold cyan]", border_style="cyan", expand=True)
-    table.add_column("Date", justify="center", width=15)
-    table.add_column("Problem Name", justify="left", ratio=3)
-    table.add_column("Topic", justify="left", width=18)
-    table.add_column("Difficulty", justify="center", width=15)
-    table.add_column("Time (min)", justify="center", width=15)
-    table.add_column("Approach Note / Local Path", justify="left", ratio=4)
+    table = Table(title="[bold cyan]Solve History Log[/bold cyan]", border_style="cyan")
+    table.add_column("Date", justify="center", width=12)
+    table.add_column("Problem Name", justify="left", width=25)
+    table.add_column("Topic", justify="left", width=15)
+    table.add_column("Difficulty", justify="center", width=12)
+    table.add_column("Time (min)", justify="center", width=10)
+    table.add_column("Approach Note", justify="left", width=30)
     
     for log in history_logs:
-        path_note = log["approach_note"] or ""
-        if log["local_path"]:
-            path_note += f" [dim]({log['local_path']})[/dim]"
+        approach = log["approach_note"] or ""
+        approach_summary = approach[:30] if len(approach) > 30 else approach
             
         table.add_row(
             log["solved_date"],
@@ -363,7 +415,7 @@ def render_history(history_logs: list[dict]):
             log["topic_name"],
             get_difficulty_colored(log["difficulty"]),
             str(log["time_taken_minutes"] or "-"),
-            path_note
+            approach_summary
         )
         
     console.print(table)
@@ -381,8 +433,9 @@ def render_topic_progress(topic: dict, solves: list[dict], assignments: list[dic
     """Render details of a specific topic including solved and pending problems."""
     # 1. Calculate mastery and days elapsed
     solved_count = len(solves)
-    assigned_count = len(assignments)
-    mastery_pct = (solved_count / assigned_count) * 100.0 if assigned_count > 0 else 0.0
+    estimated_days = topic["estimated_days"]
+    total_expected = estimated_days * problems_per_day
+    mastery_pct = calculate_topic_mastery(topic["id"])
     
     # Days elapsed
     days_elapsed = 0
@@ -394,8 +447,6 @@ def render_topic_progress(topic: dict, solves: list[dict], assignments: list[dic
             end_dt = datetime.today()
         days_elapsed = max(1, (end_dt - started_dt).days + 1)
         
-    estimated_days = topic["estimated_days"]
-    
     # Phase calculation
     halfway = math.ceil(estimated_days / 2.0)
     if days_elapsed <= halfway:
@@ -404,13 +455,13 @@ def render_topic_progress(topic: dict, solves: list[dict], assignments: list[dic
         phase = "Second Half"
         
     # Draw mastery bar
-    mastery_bar = draw_mini_progress_bar_custom(solved_count, assigned_count, width=10)
+    mastery_bar = draw_mini_progress_bar_custom(solved_count, total_expected, width=10)
     
     # Construct summary text
     status_text = topic["status"].capitalize()
     summary_text = (
         f"Topic: {topic['name']} | Track: {topic['track']} | Status: {status_text}\n"
-        f"Mastery: {solved_count}/{assigned_count} assigned ({mastery_pct:.1f}%) {mastery_bar}\n"
+        f"Mastery: {solved_count}/{total_expected} expected ({mastery_pct:.1f}%) {mastery_bar}\n"
         f"Phase: {phase} | Days elapsed: {days_elapsed}/{estimated_days}"
     )
     

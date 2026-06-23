@@ -32,7 +32,8 @@ def create_tables(conn):
         mastery_score REAL DEFAULT 0.0,
         started_date TEXT,
         completed_date TEXT,
-        leetcode_slug TEXT
+        leetcode_slug TEXT,
+        scheduled_start_date TEXT
     )
     """)
     
@@ -45,7 +46,8 @@ def create_tables(conn):
         difficulty TEXT NOT NULL,
         topic_id INTEGER REFERENCES topics(id),
         assigned_date TEXT NOT NULL,
-        status TEXT DEFAULT 'pending'
+        status TEXT DEFAULT 'pending',
+        is_revisit INTEGER DEFAULT 0
     )
     """)
     
@@ -74,6 +76,17 @@ def create_tables(conn):
         # Update default topics
         for cfg in TOPIC_CONFIGS:
             cursor.execute("UPDATE topics SET leetcode_slug = ? WHERE name = ?", (cfg["slug"], cfg["name"]))
+            
+    # Upgrade existing database for is_revisit and scheduled_start_date
+    try:
+        cursor.execute("SELECT is_revisit FROM assignments LIMIT 1")
+    except sqlite3.OperationalError:
+        cursor.execute("ALTER TABLE assignments ADD COLUMN is_revisit INTEGER DEFAULT 0")
+        
+    try:
+        cursor.execute("SELECT scheduled_start_date FROM topics LIMIT 1")
+    except sqlite3.OperationalError:
+        cursor.execute("ALTER TABLE topics ADD COLUMN scheduled_start_date TEXT")
         
     conn.commit()
 
@@ -153,6 +166,14 @@ def reset_database():
         cursor.execute("DELETE FROM topics;")
         cursor.execute("DELETE FROM user_meta;")
         conn.commit()
+        
+        # Verify counts are 0
+        # When conn uses dict_factory, we can access by key or index since cursor fetchone doesn't use dict_factory (wait, does connection use it? get_connection() does NOT have dict_factory set!)
+        # Let's check get_connection() in setup.py: it returns a raw sqlite3 connection without dict_factory. But we can alias it anyway just to be safe.
+        for table in ["solve_log", "assignments", "topics", "user_meta"]:
+            cursor.execute(f"SELECT COUNT(*) as cnt FROM {table}")
+            cnt = cursor.fetchone()[0]
+            assert cnt == 0, f"Table {table} still has {cnt} rows after reset"
     except sqlite3.OperationalError:
         pass
     finally:

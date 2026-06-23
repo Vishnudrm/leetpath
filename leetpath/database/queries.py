@@ -106,24 +106,36 @@ def update_topic_status(topic_id: int, status: str, started_date=None, completed
     conn.close()
 
 def get_assignments_for_date(date_str: str):
-    """Get all assignments for a specific YYYY-MM-DD date."""
+    """Get all assignments for a specific YYYY-MM-DD date excluding skipped ones."""
     conn = get_db_conn()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM assignments WHERE assigned_date = ?", (date_str,))
+    cursor.execute("SELECT * FROM assignments WHERE assigned_date = ? AND status != 'skipped'", (date_str,))
     rows = cursor.fetchall()
     conn.close()
     return rows
 
+def get_daily_progress_stats(date_str: str) -> tuple[int, int]:
+    """Get count of solved and total active assignments for a date."""
+    conn = get_db_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) as cnt FROM assignments WHERE assigned_date = ? AND status = 'solved'", (date_str,))
+    solved = cursor.fetchone()["cnt"]
+    cursor.execute("SELECT COUNT(*) as cnt FROM assignments WHERE assigned_date = ? AND status != 'skipped'", (date_str,))
+    total = cursor.fetchone()["cnt"]
+    conn.close()
+    return solved, total
+
 def insert_assignments(assignments_list):
-    """Bulk insert assignments. Each element is a dict with title, leetcode_url, difficulty, topic_id, assigned_date."""
+    """Bulk insert assignments. Each element is a dict with title, leetcode_url, difficulty, topic_id, assigned_date, and optional is_revisit."""
     conn = get_db_conn()
     cursor = conn.cursor()
     for item in assignments_list:
         normalized_url = normalize_leetcode_url(item["leetcode_url"])
+        is_revisit = item.get("is_revisit", 0)
         cursor.execute("""
-        INSERT INTO assignments (title, leetcode_url, difficulty, topic_id, assigned_date, status)
-        VALUES (?, ?, ?, ?, ?, 'pending')
-        """, (item["title"], normalized_url, item["difficulty"], item["topic_id"], item["assigned_date"]))
+        INSERT INTO assignments (title, leetcode_url, difficulty, topic_id, assigned_date, status, is_revisit)
+        VALUES (?, ?, ?, ?, ?, 'pending', ?)
+        """, (item["title"], normalized_url, item["difficulty"], item["topic_id"], item["assigned_date"], is_revisit))
     conn.commit()
     conn.close()
 
@@ -168,6 +180,8 @@ def get_solve_log_by_url(url: str):
 
 def insert_solve_log(assignment_id, title, url, topic_id, difficulty, solved_date, time_taken, local_path, approach_note, is_assigned):
     """Insert a solved problem into the log."""
+    time_taken = int(time_taken) if time_taken else 0
+    print(f"[DEBUG] Inserting solve log: title='{title}', time_taken_minutes={time_taken}")
     normalized_url = normalize_leetcode_url(url)
     conn = get_db_conn()
     cursor = conn.cursor()

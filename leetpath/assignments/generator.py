@@ -8,7 +8,8 @@ from leetpath.database.queries import (
     insert_assignments,
     get_all_solve_logs,
     get_assignments_for_topic,
-    get_problems_per_day
+    get_problems_per_day,
+    get_db_conn
 )
 from leetpath.fetcher.leetcode import fetch_problems_by_tag
 from leetpath.fetcher.fallback import FALLBACK_PROBLEMS
@@ -50,7 +51,7 @@ def get_difficulty_split(days_elapsed: int, estimated_days: int, problems_per_da
             easy_slots = 0
         return {"Easy": easy_slots, "Medium": medium_slots, "Hard": hard_slots}
 
-def generate_daily_assignments(today_str: str = None) -> list[dict]:
+def generate_daily_assignments(today_str: str = None, force: bool = False) -> list[dict]:
     """
     Generate and save assignments for today if they don't already exist.
     Returns the list of assignments.
@@ -58,21 +59,56 @@ def generate_daily_assignments(today_str: str = None) -> list[dict]:
     if not today_str:
         today_str = datetime.today().strftime("%Y-%m-%d")
         
+    # Check if any topic has status='pending_start' AND scheduled_start_date <= today
+    conn = get_db_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM topics WHERE status = 'pending_start' LIMIT 1")
+    pending_topic = cursor.fetchone()
+    conn.close()
+    
+    if pending_topic:
+        sched_date = pending_topic["scheduled_start_date"]
+        if sched_date and sched_date <= today_str:
+            from leetpath.database.queries import update_topic_status, set_user_meta
+            update_topic_status(pending_topic["id"], status="active", started_date=today_str)
+            conn = get_db_conn()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE topics SET scheduled_start_date = NULL WHERE id = ?", (pending_topic["id"],))
+            conn.commit()
+            conn.close()
+            set_user_meta("next_topic_start_date", "")
+            set_user_meta("current_topic_id", str(pending_topic["id"]))
+            
     active_topic = get_active_topic()
     if not active_topic:
-        # No active topic, can't generate assignments
-        return []
+        # No active topic, can't generate new assignments, but return existing ones if any
+        return get_assignments_for_date(today_str)
         
     problems_per_day = get_problems_per_day()
     
-    # Check if assignments already exist for today
-    existing = get_assignments_for_date(today_str)
-    if existing:
-        if existing[0]["topic_id"] == active_topic["id"] and len(existing) == problems_per_day:
-            return existing
-        else:
-            from leetpath.database.queries import delete_assignments_for_date
-            delete_assignments_for_date(today_str)
+    if not force:
+        # Check if assignments already exist for today
+        conn = get_db_conn()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT COUNT(*) as cnt FROM assignments 
+            WHERE assigned_date = ? AND status IN ('pending', 'solved')
+        """, (today_str,))
+        count = cursor.fetchone()["cnt"]
+        conn.close()
+        
+        if count > 0:
+            return get_assignments_for_date(today_str)
+    else:
+        # Delete existing pending assignments for today to replace them
+        conn = get_db_conn()
+        cursor = conn.cursor()
+        cursor.execute("""
+            DELETE FROM assignments 
+            WHERE assigned_date = ? AND status = 'pending'
+        """, (today_str,))
+        conn.commit()
+        conn.close()
         
     started_date = active_topic["started_date"]
     if not started_date:
@@ -171,3 +207,100 @@ def generate_daily_assignments(today_str: str = None) -> list[dict]:
     
     # Return the newly generated assignments
     return get_assignments_for_date(today_str)
+
+def refresh_assignments_for_new_topic(old_topic_id: int, new_topic_id: int, today_str: str = None):
+    """
+    When a new topic is activated:
+    1. Mark all remaining pending assignments for today from old topic as 'skipped'
+    2. Generate fresh assignments from the new topic for today
+    """
+    if not today_str:
+        today_str = datetime.today().strftime("%Y-%m-%d")
+        
+    conn = get_db_conn()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE assignments 
+        SET status = 'skipped'
+        WHERE assigned_date = ? AND status = 'pending' AND topic_id = ?
+    """, (today_str, old_topic_id))
+    conn.commit()
+    conn.close()
+    
+    generate_daily_assignments(today_str, force=True)
+
+def generate_revisit_assignments(topic_id: int, today_str: str) -> bool:
+    """Generate 5 revisit assignments for a completed/skipped topic."""
+    from leetpath.database.queries import get_topic_by_id
+    topic = get_topic_by_id(topic_id)
+    if not topic:
+        return False
+        
+    solve_logs = get_all_solve_logs()
+    solved_urls = {item["leetcode_url"].rstrip('/') for item in solve_logs}
+    
+    prev_assignments = get_assignments_for_topic(topic_id)
+    assigned_urls = {item["leetcode_url"].rstrip('/') for item in prev_assignments}
+    
+    exclude_urls = solved_urls.union(assigned_urls)
+    
+    topic_slug = topic.get("leetcode_slug") or topic.get("slug")
+    if not topic_slug:
+        topic_slug = topic["name"].lower().replace(" ", "-")
+        
+    # Get pool
+    topic_fallback = FALLBACK_PROBLEMS.get(topic["name"], [])
+    problems_pool = list(topic_fallback)
+    
+    try:
+        for diff in ["Easy", "Medium", "Hard"]:
+            fetched = fetch_problems_by_tag(topic_slug, diff, skip=0, limit=15)
+            problems_pool.extend(fetched)
+    except Exception:
+        pass
+        
+    unique_pool = {}
+    for p in problems_pool:
+        url = p["leetcode_url"].rstrip('/')
+        if url not in unique_pool:
+            unique_pool[url] = p
+            
+    unsolved_pool = [
+        p for url, p in unique_pool.items()
+        if url not in exclude_urls
+    ]
+    
+    if len(unsolved_pool) < 5:
+        # Relax constraints: exclude solved, allow already assigned
+        unsolved_pool = [
+            p for url, p in unique_pool.items()
+            if url not in solved_urls
+        ]
+        
+    if len(unsolved_pool) < 5:
+        unsolved_pool = list(unique_pool.values())
+        
+    if not unsolved_pool:
+        return False
+        
+    if len(unsolved_pool) >= 5:
+        chosen = random.sample(unsolved_pool, 5)
+    else:
+        chosen = list(unsolved_pool)
+        all_vals = list(unique_pool.values())
+        while len(chosen) < 5 and all_vals:
+            chosen.append(random.choice(all_vals))
+            
+    assignments_to_insert = []
+    for p in chosen[:5]:
+        assignments_to_insert.append({
+            "title": p["title"],
+            "leetcode_url": p["leetcode_url"],
+            "difficulty": p["difficulty"],
+            "topic_id": topic_id,
+            "assigned_date": today_str,
+            "is_revisit": 1
+        })
+        
+    insert_assignments(assignments_to_insert)
+    return True

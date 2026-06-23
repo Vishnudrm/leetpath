@@ -82,9 +82,8 @@ def show_dashboard(today_str: str):
         days_elapsed = max(1, (today_dt - started_dt).days + 1)
         
     # 4. Get today's assignment status
-    today_assignments = get_assignments_for_date(today_str)
-    today_solved = sum(1 for a in today_assignments if a["status"] == "solved")
-    today_total = len(today_assignments)
+    from leetpath.dashboard.render import get_today_progress_stats
+    today_solved, today_total = get_today_progress_stats(today_str)
     
     # 5. Get streaks
     current_streak, best_streak = update_and_get_streaks(today_str)
@@ -418,10 +417,6 @@ def log(leetcode_url: Optional[str] = typer.Argument(None)):
             
     active_topic = get_active_topic()
     
-    if not active_topic:
-        console.print("[bold red]Error: No active topic found. Cannot log solve.[/bold red]")
-        raise typer.Exit(code=1)
-        
     if matched_assignment:
         # Mark assignment solved
         update_assignment_status(matched_assignment["id"], 'solved')
@@ -440,8 +435,22 @@ def log(leetcode_url: Optional[str] = typer.Argument(None)):
         )
         console.print(f"[bold green]Successfully logged assignment: '{title}'![/bold green]")
         console.print("✓ Marked as solved in today's assignments.")
+        
+        # Check topic mastery and check for auto-advance/warnings if it is the active topic
+        if active_topic and matched_assignment["topic_id"] == active_topic["id"]:
+            check_and_update_active_topic(today_str)
+            refreshed_active = get_topic_by_id(active_topic["id"])
+            if refreshed_active and refreshed_active["status"] == "complete":
+                console.print(
+                    f"\n[bold green]★ Topic threshold reached ({refreshed_active['mastery_score']:.1f}% mastery)! ★[/bold green]\n"
+                    "Run [bold cyan]dsa next[/bold cyan] to advance to the next topic!\n"
+                )
     else:
         # Log as bonus solve under the active topic
+        if not active_topic:
+            console.print("[bold red]Error: No active topic found. Cannot log solve.[/bold red]")
+            raise typer.Exit(code=1)
+            
         insert_solve_log(
             assignment_id=None,
             title=title,
@@ -457,16 +466,13 @@ def log(leetcode_url: Optional[str] = typer.Argument(None)):
         console.print(f"[bold green]Successfully logged bonus solve: '{title}' under active topic '{active_topic['name']}'![/bold green]")
         console.print("✓ Logged as bonus solve (not in today's assignments).")
         
-    # Recalculate topic mastery and update active topic
-    check_and_update_active_topic(today_str)
-    
-    # Re-fetch active topic to see if it changed to complete
-    refreshed_active = get_topic_by_id(active_topic["id"])
-    if refreshed_active and refreshed_active["status"] == "complete":
-        console.print(
-            f"\n[bold green]★ Topic threshold reached ({refreshed_active['mastery_score']:.1f}% mastery)! ★[/bold green]\n"
-            "Run [bold cyan]dsa next[/bold cyan] to advance to the next topic!\n"
-        )
+        check_and_update_active_topic(today_str)
+        refreshed_active = get_topic_by_id(active_topic["id"])
+        if refreshed_active and refreshed_active["status"] == "complete":
+            console.print(
+                f"\n[bold green]★ Topic threshold reached ({refreshed_active['mastery_score']:.1f}% mastery)! ★[/bold green]\n"
+                "Run [bold cyan]dsa next[/bold cyan] to advance to the next topic!\n"
+            )
 
 @app.command(name="pending")
 def pending():
@@ -628,16 +634,28 @@ def next_topic():
     
     active = get_active_topic()
     if not active:
-        console.print("[yellow]No active topic found. Run 'dsa start' to begin.[/yellow]")
+        from leetpath.database.queries import get_db_conn
+        conn = get_db_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM topics WHERE status = 'locked' ORDER BY order_index ASC LIMIT 1")
+        next_locked = cursor.fetchone()
+        conn.close()
+        
+        if next_locked:
+            update_topic_status(next_locked["id"], status="active", started_date=today_str)
+            set_user_meta("current_topic_id", str(next_locked["id"]))
+            console.print(f"No active topic detected. Activating {next_locked['name']}...")
+            generate_daily_assignments(today_str)
+        else:
+            console.print("[yellow]No locked topics remaining.[/yellow]")
         raise typer.Exit()
         
     mastery = calculate_topic_mastery(active["id"])
     
     # Warn user if mastery < 70%
     if mastery < 70.0:
-        console.print(f"[bold yellow]Warning: Current topic '{active['name']}' mastery is only {mastery:.1f}% (Required: 70%).[/bold yellow]")
         confirm = Confirm.ask(
-            f"You've solved problems in {active['name']}. Advance anyway?"
+            f"{active['name']} mastery: {mastery:.0f}% (below 70% threshold). Advance anyway?"
         )
         if not confirm:
             console.print("[cyan]Staying on active topic.[/cyan]\n")
@@ -648,7 +666,8 @@ def next_topic():
         success, msg = advance_to_next_topic(today_str, force=False)
         
     if success:
-        console.print(f"[bold green]{msg}[/bold green]\n")
+        from rich.panel import Panel
+        console.print(Panel(msg, border_style="green"))
     else:
         console.print(f"[bold red]Failed to advance: {msg}[/bold red]\n")
 
@@ -701,80 +720,85 @@ def move_cmd(
         raise typer.Exit(code=1)
         
     active = get_active_topic()
-    if not active:
-        console.print("[yellow]No active topic found. Run 'dsa start' to begin.[/yellow]")
-        raise typer.Exit()
-        
-    if resolved["id"] == active["id"]:
+    active_id = active["id"] if active else None
+    
+    if active_id and resolved["id"] == active_id:
         console.print(f"Already on {resolved['name']}. No change made.\n")
         raise typer.Exit()
         
-    if resolved["order_index"] < active["order_index"]:
-        # Target is behind
-        confirm = Confirm.ask(
-            f"Move back to {resolved['name']}? This will reset progress on {active['name']}."
-        )
-        if not confirm:
-            console.print("[cyan]Move aborted.[/cyan]\n")
-            raise typer.Exit()
+    console.print(f"Moving to {resolved['name']}. All topics before it will be marked skipped.")
+    
+    confirm = Confirm.ask("Confirm move?", default=False)
+    if not confirm:
+        console.print("[cyan]Move aborted.[/cyan]\n")
+        raise typer.Exit()
+        
+    # Update topics
+    for t in topics:
+        if t["order_index"] < resolved["order_index"]:
+            from leetpath.database.queries import update_topic_state
+            update_topic_state(t["id"], status="skipped", started_date=None, completed_date=None)
+        elif t["order_index"] == resolved["order_index"]:
+            from leetpath.database.queries import update_topic_state
+            update_topic_state(t["id"], status="active", started_date=today_str, completed_date=None)
+        else:
+            from leetpath.database.queries import update_topic_state
+            update_topic_state(t["id"], status="locked", started_date=None, completed_date=None, mastery_score=0.0)
             
-        # Update topics
-        for t in topics:
-            if t["order_index"] > resolved["order_index"]:
-                from leetpath.database.queries import update_topic_state
-                update_topic_state(t["id"], status="locked", started_date=None, completed_date=None, mastery_score=0.0)
-            elif t["order_index"] == resolved["order_index"]:
-                from leetpath.database.queries import update_topic_state
-                update_topic_state(t["id"], status="active", started_date=today_str, completed_date=None)
-                
-        set_user_meta("current_topic_id", str(resolved["id"]))
-        
-        # Clear daily assignments for today and regenerate for the new active topic
-        from leetpath.database.queries import delete_assignments_for_date
-        delete_assignments_for_date(today_str)
-        generate_daily_assignments(today_str)
-        
-        console.print(f"[green]Moved back to topic {resolved['order_index']}: {resolved['name']}. Fresh assignments generated![/green]\n")
-        show_dashboard(today_str)
-        
+    set_user_meta("current_topic_id", str(resolved["id"]))
+    
+    if active:
+        from leetpath.assignments.generator import refresh_assignments_for_new_topic
+        refresh_assignments_for_new_topic(active["id"], resolved["id"], today_str)
     else:
-        # Target is ahead
-        # Determine intermediate topics to mark skipped
-        intermediate = []
-        for t in topics:
-            if active["order_index"] <= t["order_index"] < resolved["order_index"]:
-                intermediate.append(t)
-                
-        intermediate_names = ", ".join([t["name"] for t in intermediate])
-        console.print(f"Moving from {active['name']} → {resolved['name']}. {intermediate_names} will be marked skipped.")
-        
-        confirm = Confirm.ask("Confirm move?", default=False)
-        if not confirm:
-            console.print("[cyan]Move aborted.[/cyan]\n")
-            raise typer.Exit()
-            
-        # Update topics
-        for t in topics:
-            if t["order_index"] < resolved["order_index"]:
-                if t["status"] not in ["complete", "skipped"]:
-                    from leetpath.database.queries import update_topic_state
-                    update_topic_state(t["id"], status="skipped", started_date=None, completed_date=None)
-            elif t["order_index"] == resolved["order_index"]:
-                from leetpath.database.queries import update_topic_state
-                update_topic_state(t["id"], status="active", started_date=today_str, completed_date=None)
-            else:
-                from leetpath.database.queries import update_topic_state
-                update_topic_state(t["id"], status="locked", started_date=None, completed_date=None, mastery_score=0.0)
-                
-        set_user_meta("current_topic_id", str(resolved["id"]))
-        
-        # Clear daily assignments for today and regenerate for the new active topic
-        from leetpath.database.queries import delete_assignments_for_date
-        delete_assignments_for_date(today_str)
         generate_daily_assignments(today_str)
         
-        console.print(f"[green]Moved to topic {resolved['order_index']}: {resolved['name']}. Fresh assignments generated![/green]\n")
-        show_dashboard(today_str)
+    console.print(f"✓ Now active: {resolved['name']}")
+
+@app.command(name="revisit")
+def revisit(
+    topic_name: str = typer.Argument(..., help="Topic name to revisit")
+):
+    """Revisit a completed topic with extra problems today."""
+    check_init()
+    today_str = datetime.today().strftime("%Y-%m-%d")
+    
+    topics = get_all_topics()
+    resolved = resolve_topic_name(topic_name, topics)
+    if not resolved:
+        raise typer.Exit(code=1)
+        
+    if resolved["status"] not in ["complete", "skipped"]:
+        console.print(f"[bold red]Error: '{resolved['name']}' is not yet completed. Use 'dsa move' to jump to it instead.[/bold red]\n")
+        raise typer.Exit(code=1)
+        
+    # Show topic summary
+    from leetpath.stats.calculator import calculate_topic_mastery
+    mastery = calculate_topic_mastery(resolved["id"])
+    
+    # Count solved problems in this topic
+    from leetpath.database.queries import get_db_conn
+    conn = get_db_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) as cnt FROM solve_log WHERE topic_id = ?", (resolved["id"],))
+    solved_count = cursor.fetchone()["cnt"]
+    conn.close()
+    
+    console.print(f"{resolved['name']} — Mastery: {mastery:.0f}% | Solved: {solved_count} problems")
+    console.print(f"Revisiting will give you 5 extra problems from {resolved['name']} today alongside your current assignments.")
+    
+    confirm = Confirm.ask("Confirm revisit?", default=True)
+    if not confirm:
+        console.print("[cyan]Revisit cancelled.[/cyan]\n")
+        raise typer.Exit()
+        
+    # Generate revisit assignments
+    from leetpath.assignments.generator import generate_revisit_assignments
+    success = generate_revisit_assignments(resolved["id"], today_str)
+    if success:
+        console.print(f"[bold green]✓ Added 5 {resolved['name']} problems to today's list.[/bold green]\n")
+    else:
+        console.print(f"[bold red]Failed to generate revisit assignments for {resolved['name']}.[/bold red]\n")
 
 if __name__ == "__main__":
     app()

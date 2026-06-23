@@ -4,7 +4,8 @@ from leetpath.database.queries import (
     set_user_meta,
     get_all_solve_logs,
     get_assignments_for_topic,
-    get_solves_for_topic
+    get_solves_for_topic,
+    get_db_conn
 )
 
 def update_and_get_streaks(today_str: str = None) -> tuple[int, int]:
@@ -62,18 +63,29 @@ def update_and_get_streaks(today_str: str = None) -> tuple[int, int]:
 def calculate_topic_mastery(topic_id: int) -> float:
     """
     Calculate mastery % for a topic:
-    Mastery = problems solved in topic / total problems assigned for that topic so far.
-    Capped at 100%.
+    Mastery = total_solved_in_topic / total_expected_assignments
+    Where:
+      total_solved_in_topic = COUNT from solve_log WHERE topic_id = topic_id
+      total_expected_assignments = estimated_days * problems_per_day
     """
-    assignments = get_assignments_for_topic(topic_id)
-    assigned_count = len(assignments)
-    if assigned_count == 0:
+    conn = get_db_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) as cnt FROM solve_log WHERE topic_id = ?", (topic_id,))
+    solved_count = cursor.fetchone()["cnt"]
+    
+    cursor.execute("SELECT estimated_days FROM topics WHERE id = ?", (topic_id,))
+    topic_row = cursor.fetchone()
+    estimated_days = topic_row["estimated_days"] if topic_row else 1
+    conn.close()
+    
+    from leetpath.database.queries import get_problems_per_day
+    problems_per_day = get_problems_per_day()
+    
+    total_expected = estimated_days * problems_per_day
+    if total_expected == 0:
         return 0.0
         
-    solves = get_solves_for_topic(topic_id)
-    solved_count = len(solves)
-    
-    mastery = (solved_count / assigned_count) * 100.0
+    mastery = (solved_count / total_expected) * 100.0
     return min(100.0, mastery)
 
 def get_overall_stats_data(today_str: str = None) -> dict:
@@ -98,7 +110,12 @@ def get_overall_stats_data(today_str: str = None) -> dict:
     diff_counts = {"Easy": 0, "Medium": 0, "Hard": 0}
     diff_times = {"Easy": [], "Medium": [], "Hard": []}
     
-    total_time_spent = 0
+    conn = get_db_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COALESCE(SUM(time_taken_minutes), 0) as total_time FROM solve_log")
+    total_time_spent = cursor.fetchone()["total_time"]
+    conn.close()
+    
     date_counts = {}
     topic_solve_counts = {}
     
@@ -109,7 +126,6 @@ def get_overall_stats_data(today_str: str = None) -> dict:
             
         time_taken = log["time_taken_minutes"]
         if time_taken is not None:
-            total_time_spent += time_taken
             if diff in diff_times:
                 diff_times[diff].append(time_taken)
                 

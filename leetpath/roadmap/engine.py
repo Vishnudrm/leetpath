@@ -61,6 +61,38 @@ def check_and_update_active_topic(today_str: str = None) -> bool:
             completed_date=today_str,
             mastery_score=mastery
         )
+        
+        # Auto-advance to the next sequential topic
+        next_order = active["order_index"] + 1
+        next_topic = get_topic_by_order(next_order)
+        
+        if next_topic:
+            # Check Track 2 restriction
+            if next_topic["track"] == 1 or is_track1_complete():
+                from datetime import timedelta
+                tomorrow_dt = datetime.strptime(today_str, "%Y-%m-%d") + timedelta(days=1)
+                tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
+                
+                from leetpath.database.queries import get_db_conn
+                conn = get_db_conn()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE topics 
+                    SET status = 'pending_start', scheduled_start_date = ?
+                    WHERE id = ?
+                """, (tomorrow_str, next_topic["id"]))
+                conn.commit()
+                conn.close()
+                
+                set_user_meta("next_topic_start_date", tomorrow_str)
+                set_user_meta("current_topic_id", str(next_topic["id"]))
+                
+                # Print confirmation
+                from rich.console import Console
+                from rich.panel import Panel
+                console = Console()
+                confirmation_text = f"✓ {active['name']} complete!\n{next_topic['name']} starts tomorrow ({tomorrow_str}).\nRest today — you've earned it."
+                console.print(Panel(confirmation_text, border_style="green"))
         return True
         
     return False
@@ -68,8 +100,8 @@ def check_and_update_active_topic(today_str: str = None) -> bool:
 def advance_to_next_topic(today_str: str = None, force: bool = False) -> tuple[bool, str]:
     """
     Advance to the next sequential topic.
-    If force is True, the current active topic status is marked as 'skipped' (if not already complete).
-    Otherwise, if the active topic has mastery >= 70%, it is marked as 'complete'.
+    The current active topic status is marked as 'complete' (or 'skipped' if forced and below threshold).
+    The next topic is scheduled to start tomorrow with status='pending_start'.
     Returns (success, message).
     """
     if not today_str:
@@ -77,8 +109,6 @@ def advance_to_next_topic(today_str: str = None, force: bool = False) -> tuple[b
         
     active = get_active_topic()
     if not active:
-        # Check if there are any active topics. If not, maybe we can unlock the first locked one.
-        # This could happen if the user finished everything or needs initialization.
         return False, "No active topic found. Run 'dsa start' to begin."
         
     mastery = calculate_topic_mastery(active["id"])
@@ -109,21 +139,28 @@ def advance_to_next_topic(today_str: str = None, force: bool = False) -> tuple[b
         
     # Check Track 2 restriction
     if next_topic["track"] == 2 and not is_track1_complete():
-        # If Track 2 is locked, we cannot advance yet.
         return False, "Track 2 is locked! Complete all Track 1 topics first."
         
-    # Activate next topic
-    update_topic_status(
-        next_topic["id"],
-        status="active",
-        started_date=today_str
-    )
+    # Schedule next topic for tomorrow
+    from datetime import timedelta
+    tomorrow_dt = datetime.strptime(today_str, "%Y-%m-%d") + timedelta(days=1)
+    tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
+    
+    from leetpath.database.queries import get_db_conn
+    conn = get_db_conn()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE topics 
+        SET status = 'pending_start', scheduled_start_date = ?
+        WHERE id = ?
+    """, (tomorrow_str, next_topic["id"]))
+    conn.commit()
+    conn.close()
+    
+    set_user_meta("next_topic_start_date", tomorrow_str)
     set_user_meta("current_topic_id", str(next_topic["id"]))
     
-    # Generate fresh assignments for today for the new topic
-    generate_daily_assignments(today_str)
-    
-    return True, f"Advanced to topic {next_topic['order_index']}: {next_topic['name']}. Fresh assignments generated!"
+    return True, f"✓ {active['name']} complete!\n{next_topic['name']} starts tomorrow ({tomorrow_str}).\nRest today — you've earned it."
 
 def resolve_topic_name(name: str, topics: list) -> dict | None:
     """
