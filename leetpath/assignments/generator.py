@@ -140,57 +140,103 @@ def generate_daily_assignments(today_str: str = None, force: bool = False) -> li
     if not topic_slug:
         topic_slug = active_topic["name"].lower().replace(" ", "-")
         
-    for diff, count in difficulty_split.items():
-        if count == 0:
-            continue
-            
+    # 1. Fetch pools for all difficulties
+    pools = {"Easy": [], "Medium": [], "Hard": []}
+    for diff in ["Easy", "Medium", "Hard"]:
         problems_pool = []
-        
-        # 1. Try fetching from LeetCode GraphQL
+        # Try fetching from LeetCode GraphQL
         try:
             random_skip = random.randint(0, 40)
             fetched = fetch_problems_by_tag(topic_slug, diff, skip=random_skip, limit=20)
-            
-            if len(fetched) < count:
+            if len(fetched) < 5:
                 fetched = fetch_problems_by_tag(topic_slug, diff, skip=0, limit=20)
-                
             problems_pool = fetched
         except Exception:
             problems_pool = []
             
-        # 2. Filter local fallback if GraphQL failed or returned nothing
+        # Filter local fallback if GraphQL failed or returned nothing
         if not problems_pool:
             topic_fallback = FALLBACK_PROBLEMS.get(active_topic["name"], [])
             problems_pool = [
                 p for p in topic_fallback 
                 if p["difficulty"].lower() == diff.lower()
             ]
-            
-        # 3. Filter out excluded URLs
-        unsolved_pool = [
-            p for p in problems_pool 
-            if p["leetcode_url"].rstrip('/') not in exclude_urls
+        pools[diff] = problems_pool
+
+    # Gather all unique problems across all pools
+    all_problems = {}
+    for diff, p_list in pools.items():
+        for p in p_list:
+            url = p["leetcode_url"].rstrip('/')
+            if url not in all_problems:
+                all_problems[url] = p
+
+    # Categorize unique problems
+    cat_unsolved = {url: p for url, p in all_problems.items() if url not in exclude_urls}
+    cat_assigned_unsolved = {url: p for url, p in all_problems.items() if url in assigned_urls and url not in solved_urls}
+    cat_solved = {url: p for url, p in all_problems.items() if url in solved_urls}
+
+    selected_urls = set()
+    selected_problems = []
+
+    def select_from(candidates_dict, diff_filter=None, limit=0):
+        if limit <= 0:
+            return []
+        eligible = [
+            (url, p) for url, p in candidates_dict.items()
+            if url not in selected_urls and (diff_filter is None or p["difficulty"].lower() == diff_filter.lower())
         ]
-        
-        # 4. If we don't have enough unsolved problems, relax the restriction to avoid getting stuck
-        if len(unsolved_pool) < count:
-            unsolved_pool = [
-                p for p in problems_pool 
-                if p["leetcode_url"].rstrip('/') not in solved_urls
-            ]
-            
-        if len(unsolved_pool) < count:
-            unsolved_pool = problems_pool
-            
-        # 5. Randomly sample from the pool
-        if len(unsolved_pool) >= count:
-            chosen = random.sample(unsolved_pool, count)
-        else:
-            chosen = list(unsolved_pool)
-            while len(chosen) < count and problems_pool:
-                chosen.append(random.choice(problems_pool))
-                
-        selected_problems.extend(chosen)
+        count = min(len(eligible), limit)
+        if count == 0:
+            return []
+        chosen = random.sample(eligible, count)
+        for url, p in chosen:
+            selected_urls.add(url)
+            selected_problems.append(p)
+        return chosen
+
+    # Priority 1: Unsolved problems of the target difficulty matching the split
+    for diff, target_count in difficulty_split.items():
+        if target_count > 0:
+            select_from(cat_unsolved, diff_filter=diff, limit=target_count)
+
+    # Priority 2: Unsolved problems of other difficulties
+    needed = problems_per_day - len(selected_problems)
+    if needed > 0:
+        select_from(cat_unsolved, limit=needed)
+
+    # Priority 3: Assigned-but-unsolved problems of the target difficulty
+    needed = problems_per_day - len(selected_problems)
+    if needed > 0:
+        for diff, target_count in difficulty_split.items():
+            selected_diff_count = sum(1 for p in selected_problems if p["difficulty"].lower() == diff.lower())
+            diff_needed = max(0, target_count - selected_diff_count)
+            if diff_needed > 0:
+                select_from(cat_assigned_unsolved, diff_filter=diff, limit=diff_needed)
+
+    # Priority 4: Assigned-but-unsolved problems of other difficulties
+    needed = problems_per_day - len(selected_problems)
+    if needed > 0:
+        select_from(cat_assigned_unsolved, limit=needed)
+
+    # Priority 5: Solved problems of the target difficulty
+    needed = problems_per_day - len(selected_problems)
+    if needed > 0:
+        for diff, target_count in difficulty_split.items():
+            selected_diff_count = sum(1 for p in selected_problems if p["difficulty"].lower() == diff.lower())
+            diff_needed = max(0, target_count - selected_diff_count)
+            if diff_needed > 0:
+                select_from(cat_solved, diff_filter=diff, limit=diff_needed)
+
+    # Priority 6: Solved problems of other difficulties
+    needed = problems_per_day - len(selected_problems)
+    if needed > 0:
+        select_from(cat_solved, limit=needed)
+
+    # Priority 7: Absolute fallback to random selection from all available problems if still under-supplied
+    needed = problems_per_day - len(selected_problems)
+    if needed > 0:
+        select_from(all_problems, limit=needed)
         
     # Standardize to problems_per_day
     assignments_to_insert = []

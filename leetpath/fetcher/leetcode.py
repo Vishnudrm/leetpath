@@ -33,7 +33,7 @@ def fetch_problems_by_tag(tag_slug: str, difficulty: str, skip: int = 0, limit: 
     
     query = """
     query problemsetQuestionList($categorySlug: String, $limit: Int, $skip: Int, $filters: QuestionListFilterInput) {
-      problemsetQuestionList(
+      problemsetQuestionList: questionList(
         categorySlug: $categorySlug
         limit: $limit
         skip: $skip
