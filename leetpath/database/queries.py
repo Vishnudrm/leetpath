@@ -292,14 +292,14 @@ def update_topic_state(topic_id: int, status: str, started_date: str | None, com
     conn.close()
 
 def get_problems_per_day() -> int:
-    """Get problems per day limit from user_meta, default to 5."""
+    """Get problems per day limit from user_meta, default to 2."""
     val = get_user_meta("problems_per_day")
     if val:
         try:
             return int(val)
         except ValueError:
             pass
-    return 5
+    return 2
 
 def update_solve_log(log_id: int, time_taken: int, local_path: str, approach_note: str):
     """Update an existing solve log entry."""

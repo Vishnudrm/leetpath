@@ -6,20 +6,21 @@ from rich.table import Table
 from rich.text import Text
 from rich.progress_bar import ProgressBar
 from rich.columns import Columns
+from leetpath.database.queries import get_user_meta
 
 console = Console()
 
-def render_welcome_screen(start_date: str, problems_per_day: int = 5, total_topics: int = 16):
+def render_welcome_screen(start_date: str, problems_per_day: int = 2, total_topics: int = 18):
     """Render the welcome screen for first-time initialization."""
-    title_text = Text("\nWelcome to leetpath!", style="bold cyan")
+    title_text = Text("\nWelcome to leetpath (NeetCode 150 Edition)!", style="bold cyan")
     body_text = Text(
-        f"\nYour personal terminal-based assistant for placement preparation (Indian Product Companies + FAANG).\n"
-        f"Study Plan started on: {start_date}\n\n"
+        f"\nYour personal terminal-based assistant for NeetCode 150 preparation.\n"
+        f"Study Plan starts on: {start_date}\n\n"
         f"Key Rules:\n"
-        f"1. Study {total_topics} topics sequentially across 2 tracks.\n"
-        f"2. Daily problems: {problems_per_day} fresh challenges each day.\n"
-        f"3. Mastery: Reach >= 70% master score on a topic to unlock the next (or run 'dsa next').\n"
-        f"4. Track 2 unlocks only when all Track 1 topics are complete or skipped.\n\n"
+        f"1. Study {total_topics} topics sequentially in NeetCode order.\n"
+        f"2. Daily problems: {problems_per_day} questions each day.\n"
+        f"3. Topic progress: Solve all problems in a category to complete it.\n"
+        f"4. Commands: Run 'dsa next' to advance to the next topic or skip.\n\n"
         f"Run 'dsa' to view your dashboard, 'dsa today' for daily problems, or 'dsa --help' for commands.\n",
         style="white"
     )
@@ -60,6 +61,26 @@ def draw_mini_progress_bar(completed: int, total: int, width: int = 15) -> str:
     unfilled = width - filled
     return f"[{'#' * filled}{' ' * unfilled}]"
 
+def draw_mini_progress_bar_custom(completed: int, total: int, width: int = 10) -> str:
+    """Draw a text-based minimal progress bar using blocks."""
+    if total == 0:
+        return f"[{'░' * width}]"
+    filled = int(round((completed / total) * width))
+    unfilled = width - filled
+    return f"[{'█' * filled}{'░' * unfilled}]"
+
+def get_today_progress_stats(today_str: str) -> tuple[int, int]:
+    """Get count of solved and total active assignments for today."""
+    from leetpath.database.queries import get_db_conn
+    conn = get_db_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) as cnt FROM assignments WHERE assigned_date = ? AND status = 'solved'", (today_str,))
+    solved = cursor.fetchone()["cnt"]
+    cursor.execute("SELECT COUNT(*) as cnt FROM assignments WHERE assigned_date = ? AND status != 'skipped'", (today_str,))
+    total = cursor.fetchone()["cnt"]
+    conn.close()
+    return solved, total
+
 def render_dashboard(
     day_num: int,
     today_date: str,
@@ -79,11 +100,19 @@ def render_dashboard(
     header.add_column(justify="left")
     header.add_column(justify="right")
     
-    badge = " [bold green]Placement Ready ✓[/bold green]" if placement_ready else ""
-    header.add_row(
-        Text.from_markup(f"leetpath | Day {day_num}{badge}", style="bold cyan"),
-        Text(today_date, style="dim white")
-    )
+    badge = " [bold green]Preparation Complete! ✓[/bold green]" if placement_ready else ""
+    
+    start_date_str = get_user_meta("start_date")
+    if start_date_str and today_date < start_date_str:
+        header.add_row(
+            Text.from_markup(f"leetpath | Prep Starts Tomorrow{badge}", style="bold cyan"),
+            Text(today_date, style="dim white")
+        )
+    else:
+        header.add_row(
+            Text.from_markup(f"leetpath | Day {day_num}{badge}", style="bold cyan"),
+            Text(today_date, style="dim white")
+        )
     console.print(header)
     console.print("-" * 65, style="dim white")
     
@@ -97,33 +126,28 @@ def render_dashboard(
         conn = get_db_conn()
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM topics WHERE status = 'pending_start' LIMIT 1")
-        pending_start_topic = cursor.fetchone()
-        if pending_start_topic:
-            cursor.execute("SELECT * FROM topics WHERE order_index < ? AND status IN ('complete', 'skipped') ORDER BY order_index DESC LIMIT 1", (pending_start_topic["order_index"],))
+        pending_topic = cursor.fetchone()
+        if pending_topic:
+            pending_start_topic = pending_topic
+            cursor.execute("SELECT * FROM topics WHERE order_index < ? AND status IN ('complete', 'skipped') ORDER BY order_index DESC LIMIT 1", (pending_topic["order_index"],))
             completed_topic = cursor.fetchone()
         conn.close()
         
+    from leetpath.roadmap.neetcode150 import NEETCODE_150
+    from leetpath.database.queries import get_solves_for_topic
+    
     if active_topic:
-        from leetpath.database.queries import get_problems_per_day
-        from leetpath.assignments.generator import get_difficulty_split
-        problems_per_day = get_problems_per_day()
-        diff_split = get_difficulty_split(days_elapsed, active_topic["estimated_days"], problems_per_day)
-        
-        parts = []
-        for diff in ["Easy", "Medium", "Hard"]:
-            cnt = diff_split.get(diff, 0)
-            if cnt > 0:
-                parts.append(f"{cnt} {diff if diff != 'Medium' else 'Med'}")
-        diff_desc = ", ".join(parts)
-        
-        halfway = math.ceil(active_topic["estimated_days"] / 2.0)
-        phase_name = "First Half" if days_elapsed <= halfway else "Second Half"
-        phase_str = f"{phase_name} ({diff_desc})"
+        # Calculate Category progress
+        topic_problems = NEETCODE_150.get(active_topic["name"], [])
+        total_probs = len(topic_problems)
+        solved_list = get_solves_for_topic(active_topic["id"])
+        solved_count = len(solved_list)
+        pct = (solved_count / total_probs) * 100.0 if total_probs > 0 else 0.0
         
         topic_info = Text.assemble(
-            "Topic: ", Text(active_topic['name'], style="bold yellow"), f" (Track {active_topic['track']})\n",
-            f"Phase: {phase_str}\n",
-            f"Time spent: {days_elapsed} / {active_topic['estimated_days']} days elapsed"
+            "Topic: ", Text(active_topic['name'], style="bold yellow"), "\n",
+            f"Progress: {solved_count} / {total_probs} solved ({pct:.1f}%)\n",
+            f"Active: {days_elapsed} days spent in category"
         )
         topic_panel = Panel(topic_info, title="[bold cyan]Active Focus[/bold cyan]", border_style="cyan", expand=True)
     elif pending_start_topic:
@@ -137,8 +161,17 @@ def render_dashboard(
         )
         topic_panel = Panel(rest_info, title="[bold cyan]Rest Day[/bold cyan]", border_style="cyan", expand=True)
     else:
-        topic_info = Text("Active Topic: None\nRun 'dsa start' or check 'dsa progress'.")
-        topic_panel = Panel(topic_info, title="[bold cyan]Active Focus[/bold cyan]", border_style="cyan", expand=True)
+        start_date_str = get_user_meta("start_date")
+        if start_date_str and today_date < start_date_str:
+            welcome_back = Text.assemble(
+                "Plan starts tomorrow: ", Text(start_date_str, style="bold cyan"), "\n",
+                "Your daily NeetCode 150 problems (2/day) will show up here.\n",
+                "Have a great start tomorrow!"
+            )
+            topic_panel = Panel(welcome_back, title="[bold cyan]Starting Tomorrow[/bold cyan]", border_style="cyan", expand=True)
+        else:
+            topic_info = Text("Active Topic: None\nRun 'dsa start' to begin.")
+            topic_panel = Panel(topic_info, title="[bold cyan]Active Focus[/bold cyan]", border_style="cyan", expand=True)
         
     # Today's Progress Section
     progress_bar_str = draw_mini_progress_bar(today_solved, today_total, width=15)
@@ -147,16 +180,20 @@ def render_dashboard(
         "Progress: ", Text(progress_bar_str, style="cyan"), "\n",
         f"Streak: {current_streak} days (Best: {best_streak} days)"
     )
-    
-    # Panel layout
     progress_panel = Panel(today_progress_info, title="[bold cyan]Daily Stats[/bold cyan]", border_style="cyan", expand=True)
     
-    # Tracks Progress Section
-    track_details = Text.assemble(
-        f"Track 1 (Placement Core): {track1_pct:.1f}%\n",
-        f"Overall 6-Month Roadmap:  {overall_pct:.1f}%"
+    # Overall NeetCode 150 Progress
+    from leetpath.database.queries import get_all_solve_logs
+    all_solves = get_all_solve_logs()
+    solved_total = len(all_solves)
+    overall_pct_calc = (solved_total / 150.0) * 100.0
+    overall_bar = draw_mini_progress_bar_custom(solved_total, 150, width=30)
+    
+    overall_details = Text.assemble(
+        f"NeetCode 150 Progress: [bold green]{solved_total} / 150[/bold green] solved ({overall_pct_calc:.1f}%)\n",
+        f"Progress Bar:         {overall_bar}"
     )
-    tracks_panel = Panel(track_details, title="[bold cyan]Roadmap Progress[/bold cyan]", border_style="cyan", expand=True)
+    tracks_panel = Panel(overall_details, title="[bold cyan]Roadmap Progress[/bold cyan]", border_style="cyan", expand=True)
     
     # Print layout
     console.print(Columns([topic_panel, progress_panel]))
@@ -164,28 +201,16 @@ def render_dashboard(
     console.print()
     console.print(Text("Commands: dsa today | dsa log <url> | dsa roadmap | dsa stats | dsa pending", style="dim white"))
 
-def math_ceil_half(num: int) -> int:
-    """Helper to do ceil of num/2."""
-    import math
-    return math.ceil(num / 2.0)
-
-def get_today_progress_stats(today_str: str) -> tuple[int, int]:
-    """Get count of solved and total active assignments for today."""
-    from leetpath.database.queries import get_db_conn
-    conn = get_db_conn()
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) as cnt FROM assignments WHERE assigned_date = ? AND status = 'solved'", (today_str,))
-    solved = cursor.fetchone()["cnt"]
-    cursor.execute("SELECT COUNT(*) as cnt FROM assignments WHERE assigned_date = ? AND status != 'skipped'", (today_str,))
-    total = cursor.fetchone()["cnt"]
-    conn.close()
-    return solved, total
-
 def render_today_assignments(assignments: list[dict]):
     """Render today's assignments in a table."""
     active_assignments = [a for a in assignments if a["status"] != 'skipped']
     if not active_assignments:
-        console.print("[yellow]No assignments found for today. Generate using 'dsa' or 'dsa start'[/yellow]")
+        start_date_str = get_user_meta("start_date")
+        today_str = datetime.today().strftime("%Y-%m-%d")
+        if start_date_str and today_str < start_date_str:
+            console.print(f"[yellow]Preparation starts tomorrow ({start_date_str}). No assignments for today.[/yellow]\n")
+        else:
+            console.print("[yellow]No assignments found for today. Generate using 'dsa' or 'dsa start'[/yellow]")
         return
         
     regular = [a for a in active_assignments if not a.get("is_revisit")]
@@ -237,32 +262,21 @@ def render_today_assignments(assignments: list[dict]):
     console.print(f"\n[bold cyan]Summary:[/bold cyan] {solved_today}/{total_today} solved today.\n")
 
 def render_roadmap(topics: list[dict], overall_pct: float):
-    """Render the roadmap with Track dividers and milestone marker."""
-    table = Table(title=f"[bold cyan]leetpath Roadmap ({len(topics)} Topics)[/bold cyan]", border_style="cyan", expand=True)
+    """Render the roadmap listing all 18 NeetCode categories."""
+    table = Table(title=f"[bold cyan]leetpath NeetCode 150 Roadmap ({len(topics)} Categories)[/bold cyan]", border_style="cyan", expand=True)
     table.add_column("#", justify="center", width=4)
-    table.add_column("Topic", justify="left")
-    table.add_column("Track", justify="center", width=8)
-    table.add_column("Est. Days", justify="center", width=10)
-    table.add_column("Mastery", justify="center", width=10)
+    table.add_column("Category", justify="left")
+    table.add_column("Problems", justify="center", width=10)
+    table.add_column("Solved", justify="center", width=10)
+    table.add_column("Progress", justify="center", width=16)
     table.add_column("Status", justify="center", width=12)
     
-    # We will split by Track 1 and Track 2, and insert milestone marker
-    current_track = 1
+    from leetpath.roadmap.neetcode150 import NEETCODE_150
+    from leetpath.database.queries import get_solves_for_topic
     
-    # Track 1 Header row
-    table.add_row("", "[bold cyan]--- TRACK 1: PLACEMENT CORE ---[/bold cyan]", "", "", "", "")
+    total_solved_all = 0
     
     for idx, t in enumerate(topics, start=1):
-        if t["track"] == 2 and current_track == 1:
-            # Placement Ready Milestone Marker
-            table.add_row(
-                "", 
-                "[bold green]================ PLACEMENT READY MILESTONE ================[/bold green]", 
-                "", "", "", ""
-            )
-            table.add_row("", "[bold cyan]--- TRACK 2: EXTENDED TRACK ---[/bold cyan]", "", "", "", "")
-            current_track = 2
-            
         status_style = "white"
         status_text = t["status"].capitalize()
         
@@ -275,17 +289,28 @@ def render_roadmap(topics: list[dict], overall_pct: float):
         elif t["status"] == "locked":
             status_style = "dim white"
             
+        topic_problems = NEETCODE_150.get(t["name"], [])
+        total_probs = len(topic_problems)
+        
+        # Solves
+        solved_list = get_solves_for_topic(t["id"])
+        solved_count = len(solved_list)
+        total_solved_all += solved_count
+        
+        progress_bar = draw_mini_progress_bar_custom(solved_count, total_probs, width=10)
+        
         table.add_row(
             str(t["order_index"]),
             t["name"],
-            f"Track {t['track']}",
-            f"{t['estimated_days']} days",
-            f"{t['mastery_score']:.1f}%",
+            str(total_probs),
+            str(solved_count),
+            progress_bar,
             Text(status_text, style=status_style)
         )
         
     console.print(table)
-    console.print(f"\n[bold cyan]Overall Completion:[/bold cyan] {overall_pct:.1f}% of roadmap completed.\n")
+    overall_calc = (total_solved_all / 150.0) * 100.0
+    console.print(f"\n[bold cyan]Overall NeetCode 150 Completion:[/bold cyan] {total_solved_all} / 150 problems solved ({overall_calc:.1f}%).\n")
 
 def render_pending_assignments(assignments: list[dict]):
     """Render all pending assignments from all past dates grouped by date."""
@@ -312,32 +337,27 @@ def render_pending_assignments(assignments: list[dict]):
 
 def render_progress(topics: list[dict], placement_ready: bool):
     """Render per-topic progress report."""
-    console.print(Text("leetpath Progress Deep-Dive", style="bold cyan"))
+    console.print(Text("leetpath NeetCode 150 Progress Deep-Dive", style="bold cyan"))
     console.print()
     
-    current_track = 1
-    console.print(Text("--- Track 1: Placement Core ---", style="cyan"))
-    console.print()
+    from leetpath.roadmap.neetcode150 import NEETCODE_150
+    from leetpath.database.queries import get_solves_for_topic
     
     for idx, t in enumerate(topics, start=1):
-        if t["track"] == 2 and current_track == 1:
-            badge = " [Placement Ready ✓]" if placement_ready else ""
-            console.print()
-            console.print(Text(f"================ PLACEMENT READY MILESTONE{badge} ================", style="bold green"))
-            console.print()
-            console.print(Text("--- Track 2: Extended Track ---", style="cyan"))
-            console.print()
-            current_track = 2
-            
         status = t["status"]
         name = t["name"]
-        mastery = t["mastery_score"]
+        
+        topic_problems = NEETCODE_150.get(name, [])
+        total_probs = len(topic_problems)
+        solved_list = get_solves_for_topic(t["id"])
+        solved_count = len(solved_list)
+        mastery = (solved_count / total_probs) * 100.0 if total_probs > 0 else 0.0
         
         # Color coding rows
         if status == "active":
             row_prefix = Text("► ", style="bold yellow")
             style = "bold yellow"
-            details = Text.assemble(" - Active | Days Spent: ", Text(f"{t['estimated_days']} days planned", style="yellow"))
+            details = Text.assemble(" - Active Focus | Started: ", Text(f"{t['started_date']}", style="yellow"))
         elif status == "complete":
             row_prefix = Text("✓ ", style="green")
             style = "green"
@@ -351,12 +371,12 @@ def render_progress(topics: list[dict], placement_ready: bool):
             style = "dim white"
             details = Text(" - Locked", style="dim white")
             
-        progress_bar = draw_mini_progress_bar(int(mastery), 100, width=10)
+        progress_bar = draw_mini_progress_bar_custom(solved_count, total_probs, width=10)
         
         line_text = Text.assemble(
             row_prefix,
-            Text(f"{t['order_index']}. {name:<18}", style=style),
-            Text(f"Mastery: {mastery:>5.1f}% {progress_bar}", style=style),
+            Text(f"{t['order_index']}. {name:<26}", style=style),
+            Text(f"Progress: {solved_count:>2}/{total_probs:<2} ({mastery:>5.1f}%) {progress_bar}", style=style),
             details
         )
         console.print(line_text)
@@ -371,7 +391,7 @@ def render_stats(stats: dict):
     
     # 1. Overall stats panel
     overall_info = (
-        f"Total Problems Solved: [bold green]{stats['total_solved']}[/bold green]\n"
+        f"Total Problems Solved: [bold green]{stats['total_solved']} / 150[/bold green]\n"
         f"Total Solve Time:      {stats['total_time_spent']} minutes\n"
         f"Days Active:           {stats['days_active']} days\n"
         f"Current Streak:        {stats['current_streak']} days\n"
@@ -421,21 +441,14 @@ def render_history(history_logs: list[dict]):
     console.print(table)
     console.print()
 
-def draw_mini_progress_bar_custom(completed: int, total: int, width: int = 10) -> str:
-    """Draw a text-based minimal progress bar using blocks."""
-    if total == 0:
-        return f"[{'░' * width}]"
-    filled = int(round((completed / total) * width))
-    unfilled = width - filled
-    return f"[{'█' * filled}{'░' * unfilled}]"
-
 def render_topic_progress(topic: dict, solves: list[dict], assignments: list[dict], problems_per_day: int):
     """Render details of a specific topic including solved and pending problems."""
-    # 1. Calculate mastery and days elapsed
+    # Calculate category progress
+    from leetpath.roadmap.neetcode150 import NEETCODE_150
+    topic_problems = NEETCODE_150.get(topic["name"], [])
+    total_probs = len(topic_problems)
     solved_count = len(solves)
-    estimated_days = topic["estimated_days"]
-    total_expected = estimated_days * problems_per_day
-    mastery_pct = calculate_topic_mastery(topic["id"])
+    mastery_pct = (solved_count / total_probs) * 100.0 if total_probs > 0 else 0.0
     
     # Days elapsed
     days_elapsed = 0
@@ -447,22 +460,15 @@ def render_topic_progress(topic: dict, solves: list[dict], assignments: list[dic
             end_dt = datetime.today()
         days_elapsed = max(1, (end_dt - started_dt).days + 1)
         
-    # Phase calculation
-    halfway = math.ceil(estimated_days / 2.0)
-    if days_elapsed <= halfway:
-        phase = "First Half"
-    else:
-        phase = "Second Half"
-        
     # Draw mastery bar
-    mastery_bar = draw_mini_progress_bar_custom(solved_count, total_expected, width=10)
+    mastery_bar = draw_mini_progress_bar_custom(solved_count, total_probs, width=10)
     
     # Construct summary text
     status_text = topic["status"].capitalize()
     summary_text = (
-        f"Topic: {topic['name']} | Track: {topic['track']} | Status: {status_text}\n"
-        f"Mastery: {solved_count}/{total_expected} expected ({mastery_pct:.1f}%) {mastery_bar}\n"
-        f"Phase: {phase} | Days elapsed: {days_elapsed}/{estimated_days}"
+        f"Topic: {topic['name']} | Status: {status_text}\n"
+        f"Progress: {solved_count}/{total_probs} solved ({mastery_pct:.1f}%) {mastery_bar}\n"
+        f"Days elapsed: {days_elapsed} days spent in this category"
     )
     
     summary_panel = Panel(

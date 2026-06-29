@@ -42,7 +42,7 @@ from leetpath.roadmap.engine import (
     advance_to_next_topic,
     resolve_topic_name
 )
-from leetpath.fetcher.leetcode import scrape_leetcode_problem, normalize_leetcode_url
+from leetpath.fetcher.leetcode import normalize_leetcode_url
 from leetpath.dashboard.render import (
     render_welcome_screen,
     render_dashboard,
@@ -124,9 +124,14 @@ def main(ctx: typer.Context):
     show_dashboard(today_str)
 
 @app.command(name="start")
-def start():
-    """First-time initialization of the study plan with customization options."""
+def start(
+    topic: str = typer.Option("", "--topic", "-t", help="Start from a specific topic name")
+):
+    """Initialize NeetCode 150 study plan starting fresh from tomorrow."""
     today_str = datetime.today().strftime("%Y-%m-%d")
+    from datetime import timedelta
+    tomorrow_dt = datetime.today() + timedelta(days=1)
+    tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
     
     if is_db_initialized():
         confirm_wipe = Confirm.ask(
@@ -139,188 +144,44 @@ def start():
         console.print("[yellow]Wiping database...[/yellow]")
         reset_database()
         
-    console.print("\n[bold green]=== Roadmap Customization ===[/bold green]\n")
-    
-    # Step 1: Problems per day
-    problems_per_day = 5
-    while True:
-        p_day_str = Prompt.ask("How many problems do you want to solve per day?", default="5")
-        try:
-            val = int(p_day_str)
-            if 3 <= val <= 10:
-                problems_per_day = val
-                break
-            else:
-                console.print("[red]Please enter an integer between 3 and 10.[/red]")
-        except ValueError:
-            console.print("[red]Please enter a valid integer.[/red]")
-            
-    # Step 2: Customize roadmap
     from leetpath.config import TOPIC_CONFIGS
     topics_list = []
-    for idx, cfg in enumerate(TOPIC_CONFIGS, start=1):
+    
+    starting_idx = 0
+    if topic:
+        resolved = resolve_topic_name(topic, TOPIC_CONFIGS)
+        if resolved:
+            for idx, cfg in enumerate(TOPIC_CONFIGS):
+                if cfg["name"].lower() == resolved["name"].lower():
+                    starting_idx = idx
+                    break
+                    
+    for idx, cfg in enumerate(TOPIC_CONFIGS):
+        status = "locked"
+        started_date = None
+        if idx < starting_idx:
+            status = "skipped"
+        elif idx == starting_idx:
+            status = "active"
+            started_date = tomorrow_str
+            
         topics_list.append({
             "name": cfg["name"],
             "estimated_days": cfg["days"],
             "track": cfg["track"],
             "leetcode_slug": cfg["slug"],
-            "status": "locked",
-            "started_date": None
+            "status": status,
+            "started_date": started_date
         })
         
-    customize = Confirm.ask("Do you want to customize the roadmap?", default=False)
-    if customize:
-        while True:
-            console.print("\n[bold cyan]Current Roadmap:[/bold cyan]")
-            for idx, t in enumerate(topics_list, start=1):
-                console.print(f"  {idx:2d}. {t['name']} ({t['estimated_days']} days, Track {t['track']})")
-                
-            console.print("\n[bold yellow]Sub-menu:[/bold yellow]")
-            console.print("  [1] Reorder topics")
-            console.print("  [2] Add a topic")
-            console.print("  [3] Remove a topic")
-            console.print("  [4] Change estimated days for a topic")
-            console.print("  [5] Done — save and start")
-            
-            choice = Prompt.ask("Choose an option", choices=["1", "2", "3", "4", "5"])
-            
-            if choice == "1":
-                order_str = Prompt.ask("Enter new order as comma-separated numbers (e.g. 1,3,2,4,5...)")
-                try:
-                    parts = [int(p.strip()) for p in order_str.split(",")]
-                    n = len(topics_list)
-                    if len(parts) != n:
-                        console.print(f"[red]Error: You must include exactly {n} numbers.[/red]")
-                        continue
-                    if set(parts) != set(range(1, n + 1)):
-                        console.print(f"[red]Error: Numbers must be unique and from 1 to {n}.[/red]")
-                        continue
-                    preview = [topics_list[p - 1] for p in parts]
-                    console.print("\n[bold green]Preview of New Order:[/bold green]")
-                    for idx, t in enumerate(preview, start=1):
-                        console.print(f"  {idx:2d}. {t['name']} ({t['estimated_days']} days)")
-                    confirm = Confirm.ask("Confirm this order?", default=True)
-                    if confirm:
-                        topics_list = preview
-                except ValueError:
-                    console.print("[red]Error: Invalid format. Please enter comma-separated numbers.[/red]")
-                    
-            elif choice == "2":
-                name = Prompt.ask("Enter topic name")
-                slug = Prompt.ask("Enter LeetCode tag slug for this topic (e.g. 'two-pointers')")
-                pos_str = Prompt.ask(f"Insert at position (1-{len(topics_list) + 1})")
-                days_str = Prompt.ask("Estimated days")
-                track_str = Prompt.ask("Track (1 or 2)", choices=["1", "2"])
-                
-                try:
-                    pos = int(pos_str)
-                    days = int(days_str)
-                    track = int(track_str)
-                    if 1 <= pos <= len(topics_list) + 1:
-                        new_topic = {
-                            "name": name.strip(),
-                            "estimated_days": days,
-                            "track": track,
-                            "leetcode_slug": slug.strip(),
-                            "status": "locked",
-                            "started_date": None
-                        }
-                        topics_list.insert(pos - 1, new_topic)
-                        console.print(f"[green]Successfully added topic '{name}' at position {pos}.[/green]")
-                    else:
-                        console.print(f"[red]Error: Position must be between 1 and {len(topics_list) + 1}.[/red]")
-                except ValueError:
-                    console.print("[red]Error: Invalid position or estimated days.[/red]")
-                    
-            elif choice == "3":
-                num_str = Prompt.ask(f"Enter topic number to remove (1-{len(topics_list)})")
-                try:
-                    num = int(num_str)
-                    if 1 <= num <= len(topics_list):
-                        t = topics_list[num - 1]
-                        confirm = Confirm.ask(f"Remove '{t['name']}'?", default=False)
-                        if confirm:
-                            topics_list.pop(num - 1)
-                            console.print(f"[green]Successfully removed '{t['name']}'.[/green]")
-                    else:
-                        console.print(f"[red]Error: Topic number must be between 1 and {len(topics_list)}.[/red]")
-                except ValueError:
-                    console.print("[red]Error: Invalid topic number.[/red]")
-                    
-            elif choice == "4":
-                num_str = Prompt.ask(f"Enter topic number (1-{len(topics_list)})")
-                try:
-                    num = int(num_str)
-                    if 1 <= num <= len(topics_list):
-                        t = topics_list[num - 1]
-                        new_days_str = Prompt.ask(f"New estimated days [current: {t['estimated_days']}]")
-                        try:
-                            new_days = int(new_days_str)
-                            t["estimated_days"] = new_days
-                            console.print(f"[green]Updated '{t['name']}' to {new_days} days.[/green]")
-                        except ValueError:
-                            console.print("[red]Error: Invalid estimated days.[/red]")
-                    else:
-                        console.print(f"[red]Error: Topic number must be between 1 and {len(topics_list)}.[/red]")
-                except ValueError:
-                    console.print("[red]Error: Invalid topic number.[/red]")
-                    
-            elif choice == "5":
-                from rich.table import Table
-                table = Table(title="Final Customized Roadmap", expand=True)
-                table.add_column("#", justify="right", width=6)
-                table.add_column("Topic Name", justify="left")
-                table.add_column("Estimated Days", justify="right", width=18)
-                table.add_column("Track", justify="center", width=12)
-                table.add_column("LeetCode Slug", justify="left", width=25)
-                
-                for idx, t in enumerate(topics_list, start=1):
-                    table.add_row(str(idx), t["name"], str(t["estimated_days"]), f"Track {t['track']}", t["leetcode_slug"])
-                console.print(table)
-                
-                confirm = Confirm.ask("Save this roadmap and start?", default=True)
-                if confirm:
-                    break
-                    
-    # Step 3: Starting topic
-    while True:
-        starting_topic_input = Prompt.ask("Start from which topic? (press Enter for beginning, or type topic name)", default="")
-        if not starting_topic_input:
-            topics_list[0]["status"] = "active"
-            topics_list[0]["started_date"] = today_str
-            for t in topics_list[1:]:
-                t["status"] = "locked"
-                t["started_date"] = None
-            break
-        else:
-            resolved = resolve_topic_name(starting_topic_input, topics_list)
-            if resolved:
-                found = False
-                for t in topics_list:
-                    if t["name"].lower() == resolved["name"].lower():
-                        t["status"] = "active"
-                        t["started_date"] = today_str
-                        found = True
-                    elif not found:
-                        t["status"] = "skipped"
-                        t["started_date"] = None
-                    else:
-                        t["status"] = "locked"
-                        t["started_date"] = None
-                break
-                
-    # Now initialize DB
-    initialize_database(today_str, topics_list=topics_list, problems_per_day=problems_per_day)
+    problems_per_day = 2
+    initialize_database(tomorrow_str, topics_list=topics_list, problems_per_day=problems_per_day)
     
-    # Generate today's assignments
-    generate_daily_assignments(today_str)
-    
-    # Render welcome screen
-    render_welcome_screen(today_str, problems_per_day=problems_per_day, total_topics=len(topics_list))
+    render_welcome_screen(tomorrow_str, problems_per_day=problems_per_day, total_topics=len(topics_list))
 
 @app.command(name="today")
 def today():
-    """Display today's 5 assigned problems."""
+    """Display today's assigned problems."""
     check_init()
     today_str = datetime.today().strftime("%Y-%m-%d")
     
@@ -330,16 +191,14 @@ def today():
 
 @app.command(name="roadmap")
 def roadmap():
-    """Display the 6-month roadmap of all 16 topics."""
+    """Display the NeetCode 150 roadmap of all 18 categories."""
     check_init()
     topics = get_all_topics()
     
     # Refresh mastery score for all topics (so the list shows updated scores)
     for t in topics:
         mastery = calculate_topic_mastery(t["id"])
-        # Update in database if status isn't complete/skipped (actually update for accurate roadmap)
-        # We can update status to complete if mastery crossed 70% (just in case)
-        if t["status"] == "active" and mastery >= 70.0:
+        if t["status"] == "active" and mastery >= 100.0:
             from leetpath.database.queries import update_topic_status
             update_topic_status(t["id"], status="complete", completed_date=datetime.today().strftime("%Y-%m-%d"), mastery_score=mastery)
             t["status"] = "complete"
@@ -356,7 +215,7 @@ def roadmap():
 
 @app.command(name="log")
 def log(leetcode_url: Optional[str] = typer.Argument(None)):
-    """Log a solved problem using its LeetCode URL."""
+    """Log a solved NeetCode 150 problem using its LeetCode URL."""
     check_init()
     today_str = datetime.today().strftime("%Y-%m-%d")
     
@@ -374,22 +233,32 @@ def log(leetcode_url: Optional[str] = typer.Argument(None)):
         console.print("Skipping to avoid duplicate logs.\n")
         raise typer.Exit()
         
-    console.print("[cyan]Fetching problem details from LeetCode...[/cyan]")
-    title, difficulty = scrape_leetcode_problem(leetcode_url)
+    # Check if this URL is part of NeetCode 150
+    from leetpath.roadmap.neetcode150 import NEETCODE_150
+    from leetpath.fetcher.leetcode import extract_slug_from_url
+    url_slug = extract_slug_from_url(leetcode_url)
     
-    if not title or not difficulty:
-        console.print("[yellow]Could not automatically fetch problem details.[/yellow]")
-        title = Prompt.ask("Please enter the problem title manually")
-        difficulty = Prompt.ask(
-            "Please enter the difficulty manually",
-            choices=["Easy", "Medium", "Hard"]
-        )
-    else:
-        # Step 2: Show problem details
-        console.print(f"Problem details: [bold cyan]{title}[/bold cyan] ({difficulty.capitalize()})")
+    matched_nc_prob = None
+    matched_nc_category = None
+    for category, probs in NEETCODE_150.items():
+        for p in probs:
+            p_slug = extract_slug_from_url(p["leetcode_url"])
+            if url_slug and p_slug and url_slug == p_slug:
+                matched_nc_prob = p
+                matched_nc_category = category
+                break
+        if matched_nc_prob:
+            break
+            
+    if not matched_nc_prob:
+        console.print(f"[bold red]Error: '{leetcode_url}' is not a NeetCode 150 problem.[/bold red]")
+        console.print("[yellow]Only NeetCode 150 problems can be logged to maintain roadmap integrity.[/yellow]\n")
+        raise typer.Exit(code=1)
         
-    # Capitalize difficulty to match DB standards (Easy/Medium/Hard)
-    difficulty = difficulty.capitalize()
+    title = matched_nc_prob["title"]
+    difficulty = matched_nc_prob["difficulty"].capitalize()
+    
+    console.print(f"Problem details: [bold cyan]{title}[/bold cyan] ({difficulty})")
     
     # Step 3: Confirm
     confirm_log = Confirm.ask("Confirm")
@@ -412,9 +281,22 @@ def log(leetcode_url: Optional[str] = typer.Argument(None)):
     approach_note = Prompt.ask("Approach note (optional, press Enter to skip)", default="")
     
     # Step 7: Save solve log and show confirmation
+    # Look up the topic ID for matched_nc_category from the database
+    from leetpath.database.queries import get_db_conn
+    conn = get_db_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM topics WHERE name = ?", (matched_nc_category,))
+    topic_row = cursor.fetchone()
+    conn.close()
+    
+    if not topic_row:
+        console.print(f"[bold red]Error: Topic '{matched_nc_category}' not found in database.[/bold red]")
+        raise typer.Exit(code=1)
+    topic_id = topic_row["id"]
+    
     # Find matching assignment by comparing title or url against today's assignments
     matched_assignment = find_pending_assignment_today(title, leetcode_url, today_str)
-            
+    
     active_topic = get_active_topic()
     
     if matched_assignment:
@@ -425,7 +307,7 @@ def log(leetcode_url: Optional[str] = typer.Argument(None)):
             assignment_id=matched_assignment["id"],
             title=title,
             url=leetcode_url,
-            topic_id=matched_assignment["topic_id"],
+            topic_id=topic_id,
             difficulty=difficulty,
             solved_date=today_str,
             time_taken=time_taken,
@@ -435,27 +317,13 @@ def log(leetcode_url: Optional[str] = typer.Argument(None)):
         )
         console.print(f"[bold green]Successfully logged assignment: '{title}'![/bold green]")
         console.print("✓ Marked as solved in today's assignments.")
-        
-        # Check topic mastery and check for auto-advance/warnings if it is the active topic
-        if active_topic and matched_assignment["topic_id"] == active_topic["id"]:
-            check_and_update_active_topic(today_str)
-            refreshed_active = get_topic_by_id(active_topic["id"])
-            if refreshed_active and refreshed_active["status"] == "complete":
-                console.print(
-                    f"\n[bold green]★ Topic threshold reached ({refreshed_active['mastery_score']:.1f}% mastery)! ★[/bold green]\n"
-                    "Run [bold cyan]dsa next[/bold cyan] to advance to the next topic!\n"
-                )
     else:
-        # Log as bonus solve under the active topic
-        if not active_topic:
-            console.print("[bold red]Error: No active topic found. Cannot log solve.[/bold red]")
-            raise typer.Exit(code=1)
-            
+        # Log as bonus/unassigned solve under its category
         insert_solve_log(
             assignment_id=None,
             title=title,
             url=leetcode_url,
-            topic_id=active_topic["id"],
+            topic_id=topic_id,
             difficulty=difficulty,
             solved_date=today_str,
             time_taken=time_taken,
@@ -463,14 +331,15 @@ def log(leetcode_url: Optional[str] = typer.Argument(None)):
             approach_note=approach_note,
             is_assigned=0
         )
-        console.print(f"[bold green]Successfully logged bonus solve: '{title}' under active topic '{active_topic['name']}'![/bold green]")
-        console.print("✓ Logged as bonus solve (not in today's assignments).")
+        console.print(f"[bold green]Successfully logged solve: '{title}' under category '{matched_nc_category}'![/bold green]")
         
+    # Always check/update the active topic completion
+    if active_topic:
         check_and_update_active_topic(today_str)
         refreshed_active = get_topic_by_id(active_topic["id"])
         if refreshed_active and refreshed_active["status"] == "complete":
             console.print(
-                f"\n[bold green]★ Topic threshold reached ({refreshed_active['mastery_score']:.1f}% mastery)! ★[/bold green]\n"
+                f"\n[bold green]★ Topic threshold reached (100% mastery)! ★[/bold green]\n"
                 "Run [bold cyan]dsa next[/bold cyan] to advance to the next topic!\n"
             )
 
@@ -652,10 +521,10 @@ def next_topic():
         
     mastery = calculate_topic_mastery(active["id"])
     
-    # Warn user if mastery < 70%
-    if mastery < 70.0:
+    # Warn user if mastery < 100%
+    if mastery < 100.0:
         confirm = Confirm.ask(
-            f"{active['name']} mastery: {mastery:.0f}% (below 70% threshold). Advance anyway?"
+            f"{active['name']} mastery: {mastery:.0f}% (below 100% threshold). Advance anyway?"
         )
         if not confirm:
             console.print("[cyan]Staying on active topic.[/cyan]\n")
@@ -785,7 +654,7 @@ def revisit(
     conn.close()
     
     console.print(f"{resolved['name']} — Mastery: {mastery:.0f}% | Solved: {solved_count} problems")
-    console.print(f"Revisiting will give you 5 extra problems from {resolved['name']} today alongside your current assignments.")
+    console.print(f"Revisiting will give you up to 5 extra problems from {resolved['name']} today alongside your current assignments.")
     
     confirm = Confirm.ask("Confirm revisit?", default=True)
     if not confirm:
@@ -796,7 +665,7 @@ def revisit(
     from leetpath.assignments.generator import generate_revisit_assignments
     success = generate_revisit_assignments(resolved["id"], today_str)
     if success:
-        console.print(f"[bold green]✓ Added 5 {resolved['name']} problems to today's list.[/bold green]\n")
+        console.print(f"[bold green]✓ Added revisit problems from {resolved['name']} to today's list.[/bold green]\n")
     else:
         console.print(f"[bold red]Failed to generate revisit assignments for {resolved['name']}.[/bold red]\n")
 

@@ -120,7 +120,7 @@ def seed_topics(conn, start_date_str=None, topics_list=None):
         
     conn.commit()
 
-def initialize_database(start_date_str=None, topics_list=None, problems_per_day=5):
+def initialize_database(start_date_str=None, topics_list=None, problems_per_day=2):
     """Initialize schema and seed metadata / topics."""
     if not start_date_str:
         start_date_str = datetime.today().strftime('%Y-%m-%d')

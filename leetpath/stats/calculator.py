@@ -63,29 +63,27 @@ def update_and_get_streaks(today_str: str = None) -> tuple[int, int]:
 def calculate_topic_mastery(topic_id: int) -> float:
     """
     Calculate mastery % for a topic:
-    Mastery = total_solved_in_topic / total_expected_assignments
-    Where:
-      total_solved_in_topic = COUNT from solve_log WHERE topic_id = topic_id
-      total_expected_assignments = estimated_days * problems_per_day
+    Mastery = total_solved_in_topic / total_problems_in_topic
     """
     conn = get_db_conn()
     cursor = conn.cursor()
+    cursor.execute("SELECT name FROM topics WHERE id = ?", (topic_id,))
+    topic_row = cursor.fetchone()
+    topic_name = topic_row["name"] if topic_row else None
+    
     cursor.execute("SELECT COUNT(*) as cnt FROM solve_log WHERE topic_id = ?", (topic_id,))
     solved_count = cursor.fetchone()["cnt"]
-    
-    cursor.execute("SELECT estimated_days FROM topics WHERE id = ?", (topic_id,))
-    topic_row = cursor.fetchone()
-    estimated_days = topic_row["estimated_days"] if topic_row else 1
     conn.close()
     
-    from leetpath.database.queries import get_problems_per_day
-    problems_per_day = get_problems_per_day()
-    
-    total_expected = estimated_days * problems_per_day
-    if total_expected == 0:
+    if not topic_name:
         return 0.0
         
-    mastery = (solved_count / total_expected) * 100.0
+    from leetpath.roadmap.neetcode150 import NEETCODE_150
+    total_problems = len(NEETCODE_150.get(topic_name, []))
+    if total_problems == 0:
+        return 0.0
+        
+    mastery = (solved_count / total_problems) * 100.0
     return min(100.0, mastery)
 
 def get_overall_stats_data(today_str: str = None) -> dict:

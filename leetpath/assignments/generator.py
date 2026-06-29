@@ -9,10 +9,9 @@ from leetpath.database.queries import (
     get_all_solve_logs,
     get_assignments_for_topic,
     get_problems_per_day,
+    get_user_meta,
     get_db_conn
 )
-from leetpath.fetcher.leetcode import fetch_problems_by_tag
-from leetpath.fetcher.fallback import FALLBACK_PROBLEMS
 
 def get_days_elapsed(started_date_str: str, today_str: str) -> int:
     """Calculate the 1-based days elapsed in a topic."""
@@ -21,36 +20,6 @@ def get_days_elapsed(started_date_str: str, today_str: str) -> int:
     delta = today_dt - started_dt
     return max(1, delta.days + 1)
 
-def get_difficulty_split(days_elapsed: int, estimated_days: int, problems_per_day: int) -> dict[str, int]:
-    """
-    Determine how many Easy, Medium, and Hard problems to assign.
-    First half of topic:
-      Easy slots = ceil(problems_per_day * 0.6)
-      Medium slots = problems_per_day - easy_slots
-    Second half of topic:
-      Hard slots = ceil(problems_per_day * 0.4)
-      Medium slots = ceil(problems_per_day * 0.4)
-      Easy slots = problems_per_day - hard_slots - medium_slots
-    """
-    halfway = math.ceil(estimated_days / 2.0)
-    if days_elapsed <= halfway:
-        easy_slots = math.ceil(problems_per_day * 0.6)
-        medium_slots = problems_per_day - easy_slots
-        return {"Easy": easy_slots, "Medium": medium_slots, "Hard": 0}
-    else:
-        hard_slots = math.ceil(problems_per_day * 0.4)
-        medium_slots = math.ceil(problems_per_day * 0.4)
-        easy_slots = problems_per_day - hard_slots - medium_slots
-        if easy_slots < 0:
-            excess = -easy_slots
-            reduce_med = min(excess, medium_slots)
-            medium_slots -= reduce_med
-            excess -= reduce_med
-            if excess > 0:
-                hard_slots -= excess
-            easy_slots = 0
-        return {"Easy": easy_slots, "Medium": medium_slots, "Hard": hard_slots}
-
 def generate_daily_assignments(today_str: str = None, force: bool = False) -> list[dict]:
     """
     Generate and save assignments for today if they don't already exist.
@@ -58,6 +27,11 @@ def generate_daily_assignments(today_str: str = None, force: bool = False) -> li
     """
     if not today_str:
         today_str = datetime.today().strftime("%Y-%m-%d")
+        
+    # Start date constraint (start fresh from tomorrow)
+    start_date_str = get_user_meta("start_date")
+    if start_date_str and today_str < start_date_str:
+        return []
         
     # Check if any topic has status='pending_start' AND scheduled_start_date <= today
     conn = get_db_conn()
@@ -109,14 +83,7 @@ def generate_daily_assignments(today_str: str = None, force: bool = False) -> li
         """, (today_str,))
         conn.commit()
         conn.close()
-        
-    started_date = active_topic["started_date"]
-    if not started_date:
-        started_date = today_str
-        
-    days_elapsed = get_days_elapsed(started_date, today_str)
-    difficulty_split = get_difficulty_split(days_elapsed, active_topic["estimated_days"], problems_per_day)
-    
+
     # Get all solved URLs to exclude them
     solve_logs = get_all_solve_logs()
     solved_urls = {item["leetcode_url"].rstrip('/') for item in solve_logs}
@@ -125,122 +92,25 @@ def generate_daily_assignments(today_str: str = None, force: bool = False) -> li
     prev_assignments = get_assignments_for_topic(active_topic["id"])
     assigned_urls = {item["leetcode_url"].rstrip('/') for item in prev_assignments}
     
-    exclude_urls = solved_urls.union(assigned_urls)
+    from leetpath.roadmap.neetcode150 import NEETCODE_150
+    topic_problems = NEETCODE_150.get(active_topic["name"], [])
     
-    selected_problems = []
-    
-    # Resolve topic slug
-    topic_slug = active_topic.get("leetcode_slug") or active_topic.get("slug")
-    if not topic_slug:
-        from leetpath.config import TOPIC_CONFIGS
-        for cfg in TOPIC_CONFIGS:
-            if cfg["name"].lower() == active_topic["name"].lower():
-                topic_slug = cfg["slug"]
-                break
-    if not topic_slug:
-        topic_slug = active_topic["name"].lower().replace(" ", "-")
-        
-    # 1. Fetch pools for all difficulties
-    pools = {"Easy": [], "Medium": [], "Hard": []}
-    for diff in ["Easy", "Medium", "Hard"]:
-        problems_pool = []
-        # Try fetching from LeetCode GraphQL
-        try:
-            random_skip = random.randint(0, 40)
-            fetched = fetch_problems_by_tag(topic_slug, diff, skip=random_skip, limit=20)
-            if len(fetched) < 5:
-                fetched = fetch_problems_by_tag(topic_slug, diff, skip=0, limit=20)
-            problems_pool = fetched
-        except Exception:
-            problems_pool = []
+    # Find problems that are NOT solved and NOT assigned
+    candidates = []
+    for p in topic_problems:
+        p_url = p["leetcode_url"].rstrip('/')
+        if p_url not in solved_urls and p_url not in assigned_urls:
+            candidates.append(p)
             
-        # Filter local fallback if GraphQL failed or returned nothing
-        if not problems_pool:
-            topic_fallback = FALLBACK_PROBLEMS.get(active_topic["name"], [])
-            problems_pool = [
-                p for p in topic_fallback 
-                if p["difficulty"].lower() == diff.lower()
-            ]
-        pools[diff] = problems_pool
-
-    # Gather all unique problems across all pools
-    all_problems = {}
-    for diff, p_list in pools.items():
-        for p in p_list:
-            url = p["leetcode_url"].rstrip('/')
-            if url not in all_problems:
-                all_problems[url] = p
-
-    # Categorize unique problems
-    cat_unsolved = {url: p for url, p in all_problems.items() if url not in exclude_urls}
-    cat_assigned_unsolved = {url: p for url, p in all_problems.items() if url in assigned_urls and url not in solved_urls}
-    cat_solved = {url: p for url, p in all_problems.items() if url in solved_urls}
-
-    selected_urls = set()
-    selected_problems = []
-
-    def select_from(candidates_dict, diff_filter=None, limit=0):
-        if limit <= 0:
-            return []
-        eligible = [
-            (url, p) for url, p in candidates_dict.items()
-            if url not in selected_urls and (diff_filter is None or p["difficulty"].lower() == diff_filter.lower())
-        ]
-        count = min(len(eligible), limit)
-        if count == 0:
-            return []
-        chosen = random.sample(eligible, count)
-        for url, p in chosen:
-            selected_urls.add(url)
-            selected_problems.append(p)
-        return chosen
-
-    # Priority 1: Unsolved problems of the target difficulty matching the split
-    for diff, target_count in difficulty_split.items():
-        if target_count > 0:
-            select_from(cat_unsolved, diff_filter=diff, limit=target_count)
-
-    # Priority 2: Unsolved problems of other difficulties
-    needed = problems_per_day - len(selected_problems)
-    if needed > 0:
-        select_from(cat_unsolved, limit=needed)
-
-    # Priority 3: Assigned-but-unsolved problems of the target difficulty
-    needed = problems_per_day - len(selected_problems)
-    if needed > 0:
-        for diff, target_count in difficulty_split.items():
-            selected_diff_count = sum(1 for p in selected_problems if p["difficulty"].lower() == diff.lower())
-            diff_needed = max(0, target_count - selected_diff_count)
-            if diff_needed > 0:
-                select_from(cat_assigned_unsolved, diff_filter=diff, limit=diff_needed)
-
-    # Priority 4: Assigned-but-unsolved problems of other difficulties
-    needed = problems_per_day - len(selected_problems)
-    if needed > 0:
-        select_from(cat_assigned_unsolved, limit=needed)
-
-    # Priority 5: Solved problems of the target difficulty
-    needed = problems_per_day - len(selected_problems)
-    if needed > 0:
-        for diff, target_count in difficulty_split.items():
-            selected_diff_count = sum(1 for p in selected_problems if p["difficulty"].lower() == diff.lower())
-            diff_needed = max(0, target_count - selected_diff_count)
-            if diff_needed > 0:
-                select_from(cat_solved, diff_filter=diff, limit=diff_needed)
-
-    # Priority 6: Solved problems of other difficulties
-    needed = problems_per_day - len(selected_problems)
-    if needed > 0:
-        select_from(cat_solved, limit=needed)
-
-    # Priority 7: Absolute fallback to random selection from all available problems if still under-supplied
-    needed = problems_per_day - len(selected_problems)
-    if needed > 0:
-        select_from(all_problems, limit=needed)
+    if not candidates:
+        # No new problems to assign in this topic
+        return get_assignments_for_date(today_str)
         
-    # Standardize to problems_per_day
+    # Assign the next 2 (problems_per_day) in sequence
+    selected = candidates[:problems_per_day]
+        
     assignments_to_insert = []
-    for p in selected_problems[:problems_per_day]:
+    for p in selected:
         assignments_to_insert.append({
             "title": p["title"],
             "leetcode_url": p["leetcode_url"],
@@ -276,73 +146,26 @@ def refresh_assignments_for_new_topic(old_topic_id: int, new_topic_id: int, toda
     generate_daily_assignments(today_str, force=True)
 
 def generate_revisit_assignments(topic_id: int, today_str: str) -> bool:
-    """Generate 5 revisit assignments for a completed/skipped topic."""
-    from leetpath.database.queries import get_topic_by_id
+    """Generate revisit assignments for a completed/skipped topic."""
+    from leetpath.database.queries import get_topic_by_id, get_solves_for_topic
     topic = get_topic_by_id(topic_id)
     if not topic:
         return False
         
-    solve_logs = get_all_solve_logs()
-    solved_urls = {item["leetcode_url"].rstrip('/') for item in solve_logs}
-    
-    prev_assignments = get_assignments_for_topic(topic_id)
-    assigned_urls = {item["leetcode_url"].rstrip('/') for item in prev_assignments}
-    
-    exclude_urls = solved_urls.union(assigned_urls)
-    
-    topic_slug = topic.get("leetcode_slug") or topic.get("slug")
-    if not topic_slug:
-        topic_slug = topic["name"].lower().replace(" ", "-")
-        
-    # Get pool
-    topic_fallback = FALLBACK_PROBLEMS.get(topic["name"], [])
-    problems_pool = list(topic_fallback)
-    
-    try:
-        for diff in ["Easy", "Medium", "Hard"]:
-            fetched = fetch_problems_by_tag(topic_slug, diff, skip=0, limit=15)
-            problems_pool.extend(fetched)
-    except Exception:
-        pass
-        
-    unique_pool = {}
-    for p in problems_pool:
-        url = p["leetcode_url"].rstrip('/')
-        if url not in unique_pool:
-            unique_pool[url] = p
-            
-    unsolved_pool = [
-        p for url, p in unique_pool.items()
-        if url not in exclude_urls
-    ]
-    
-    if len(unsolved_pool) < 5:
-        # Relax constraints: exclude solved, allow already assigned
-        unsolved_pool = [
-            p for url, p in unique_pool.items()
-            if url not in solved_urls
-        ]
-        
-    if len(unsolved_pool) < 5:
-        unsolved_pool = list(unique_pool.values())
-        
-    if not unsolved_pool:
+    solves = get_solves_for_topic(topic_id)
+    if not solves:
         return False
         
-    if len(unsolved_pool) >= 5:
-        chosen = random.sample(unsolved_pool, 5)
-    else:
-        chosen = list(unsolved_pool)
-        all_vals = list(unique_pool.values())
-        while len(chosen) < 5 and all_vals:
-            chosen.append(random.choice(all_vals))
+    # Pick up to 5 random solved problems to revisit
+    count = min(5, len(solves))
+    chosen = random.sample(solves, count)
             
     assignments_to_insert = []
-    for p in chosen[:5]:
+    for s in chosen:
         assignments_to_insert.append({
-            "title": p["title"],
-            "leetcode_url": p["leetcode_url"],
-            "difficulty": p["difficulty"],
+            "title": s["title"],
+            "leetcode_url": s["leetcode_url"],
+            "difficulty": s["difficulty"],
             "topic_id": topic_id,
             "assigned_date": today_str,
             "is_revisit": 1
